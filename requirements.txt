@@ -1,0 +1,7 @@
+python-dotenv==1.2.1
+nnsight==0.3.7
+dictionary-learning==0.1.0
+sae-bench==0.5.1
+sae-lens==6.30.1
+sae-probes==0.3.0
+sae-dashboard==0.7.3

@@ -1,0 +1,30 @@
+{
+    "trainer": {
+        "dict_class": "AutoEncoder",
+        "trainer_class": "StandardTrainer",
+        "activation_dim": 2304,
+        "dict_size": 16384,
+        "lr": 5e-05,
+        "l1_penalty": 0.03,
+        "warmup_steps": 1000,
+        "resample_steps": null,
+        "sparsity_warmup_steps": 5000,
+        "steps": 244140,
+        "decay_start": 195312,
+        "seed": 0,
+        "device": "cuda:0",
+        "layer": 6,
+        "lm_name": "google/gemma-2-2b",
+        "wandb_name": "StandardTrainer-google/gemma-2-2b-resid_post_layer_6_trainer_3",
+        "submodule_name": "resid_post_layer_6"
+    },
+    "buffer": {
+        "d_submodule": 2304,
+        "io": "out",
+        "n_ctxs": 244,
+        "ctx_len": 1024,
+        "refresh_batch_size": 4,
+        "out_batch_size": 2048,
+        "device": "cuda:0"
+    }
+}
