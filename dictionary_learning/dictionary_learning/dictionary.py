@@ -123,16 +123,47 @@ class AutoEncoder(Dictionary, nn.Module):
         # Errors can be relatively large in larger SAEs due to floating point precision
         assert t.allclose(initial_output, new_output, atol=1e-4)
 
-
     @classmethod
-    def from_pretrained(cls, path, dtype=t.float, device=None, normalize_decoder=True):
+    def from_pretrained(cls, path=None, dtype=t.float, device=None, load_from_sae_lens=False, normalize_decoder=True, **kwargs):
         """
         Load a pretrained autoencoder from a file.
         """
-        state_dict = t.load(path)
-        dict_size, activation_dim = state_dict["encoder.weight"].shape
-        autoencoder = cls(activation_dim, dict_size)
-        autoencoder.load_state_dict(state_dict)
+        if not load_from_sae_lens:
+            state_dict = t.load(path)
+            activation_dim, dict_size = state_dict["encoder.weight"].shape
+            autoencoder = cls(activation_dim, dict_size)
+            autoencoder.load_state_dict(state_dict)
+        else:
+            from sae_lens import SAE
+
+            sae, cfg_dict, _ = SAE.from_pretrained(**kwargs)
+            # fix keys
+            to_rename = {
+                'W_enc': 'encoder.weight',
+                'b_enc': 'encoder.bias',
+                'W_dec': 'decoder.weight',
+                'b_dec': 'bias',
+            }
+            state_dict = {}
+            for k, v in sae.state_dict().items():
+                # skip threshold
+                if k == "threshold":
+                    continue
+                _k = to_rename.get(k, k)
+                # transpose
+                if _k in ("encoder.weight", "decoder.weight"):
+                    v = v.t().contiguous()
+
+                state_dict[_k] = v
+
+            if "finetuning_scaling_factor" in cfg_dict.keys():
+                assert (
+                    cfg_dict["finetuning_scaling_factor"] == False
+                ), "Finetuning scaling factor not supported"
+            dict_size, activation_dim = cfg_dict["d_sae"], cfg_dict["d_in"]
+            autoencoder = cls(activation_dim, dict_size)
+            autoencoder.load_state_dict(state_dict)
+            autoencoder.apply_b_dec_to_input = cfg_dict["apply_b_dec_to_input"]
 
         # This is useful for doing analysis where e.g. feature activation magnitudes are important
         # If training the SAE using the April update, the decoder weights are not normalized
@@ -367,9 +398,10 @@ class JumpReluAutoEncoder(Dictionary, nn.Module):
             from sae_lens import SAE
 
             sae, cfg_dict, _ = SAE.from_pretrained(**kwargs)
-            assert (
-                cfg_dict["finetuning_scaling_factor"] == False
-            ), "Finetuning scaling factor not supported"
+            if "finetuning_scaling_factor" in cfg_dict.keys():
+                assert (
+                    cfg_dict["finetuning_scaling_factor"] == False
+                ), "Finetuning scaling factor not supported"
             dict_size, activation_dim = cfg_dict["d_sae"], cfg_dict["d_in"]
             autoencoder = JumpReluAutoEncoder(activation_dim, dict_size, device=device)
             autoencoder.load_state_dict(sae.state_dict())

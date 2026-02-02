@@ -1,5 +1,20 @@
 import os
 import json
+import argparse
+
+
+def get_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--dataset", type=str, nargs="+", choices=["alpaca"], required=True, help="which dataset to use"
+    )
+    parser.add_argument(
+        "--multi_turn", action="store_true", help="follow multi-turn fashion"
+    )
+
+    args = parser.parse_args()
+    return args
 
 
 def load_alpaca(path="chatalpaca-20k.json", multi_turn=False):
@@ -48,9 +63,17 @@ def load_alpaca(path="chatalpaca-20k.json", multi_turn=False):
 
 
 if __name__ == '__main__':
-    multi_turn = True
-    instances = load_alpaca(multi_turn=multi_turn)
-    
-    fname = f'data_mt.json' if multi_turn else f'data.json'
-    with open(fname, "w", encoding="utf-8") as f:
-        json.dump(instances, f, ensure_ascii=False, indent=4)
+    args = get_args()
+
+    func_map = {
+        'alpaca': load_alpaca
+    }
+
+    for dataset in args.dataset:
+        instances = func_map[dataset](multi_turn=args.multi_turn)
+
+        fname = f'{dataset}_mt.json' if args.multi_turn else f'{dataset}.json'
+        with open(fname, "w", encoding="utf-8") as f:
+            json.dump(instances, f, ensure_ascii=False, indent=4)
+
+# python3 dataset.py --dataset alpaca --multi_turn
