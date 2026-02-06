@@ -28,6 +28,9 @@ def get_args():
     parser.add_argument(
         "--save_dir", type=str, required=True, help="where to store sweep"
     )
+    parser.add_argument(
+        "--dataset_name", type=str, help="what dataset to train SAE on"
+    )
     parser.add_argument("--use_wandb", action="store_true", help="use wandb logging")
     parser.add_argument("--dry_run", action="store_true", help="dry run sweep")
     parser.add_argument(
@@ -55,11 +58,12 @@ def get_args():
 
 if __name__ == "__main__":
     """
-    python run.py --save_dir run2 --model_id EleutherAI/pythia-70m-deduped --layers 3 --architectures standard jump_relu batch_top_k top_k gated --use_wandb
-    python run.py --save_dir run3 --model_id google/gemma-2-2b --layers 12 --architectures standard top_k --use_wandb
+    CUDA_VISIBLE_DEVICES=0 python run.py --save_dir run --dataset_name alpaca --model_id google/gemma-2-2b --layers 12 --architectures standard
+    python run.py --save_dir run1 --model_id EleutherAI/pythia-70m-deduped --layers 3 --architectures standard jump_relu batch_top_k top_k gated --use_wandb
     python run.py --save_dir jumprelu --model_id EleutherAI/pythia-70m-deduped --layers 3 --architectures jump_relu --use_wandb
     """
     args = get_args()
+
     # prevents random CUDA out of memory errors
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     # for wandb to work with multiprocessing
@@ -82,6 +86,7 @@ if __name__ == "__main__":
             run_training(
                 model_id=args.model_id,
                 layer=layer,
+                dataset_name=args.dataset_name,
                 save_dir=save_dir,
                 device=args.device,
                 architectures=args.architectures,
@@ -98,6 +103,7 @@ if __name__ == "__main__":
         run_training(
                 model_id=args.model_id,
                 save_dir=save_dir,
+                dataset_name=args.dataset_name,
                 device=args.device,
                 architectures=args.architectures,
                 num_tokens=config.num_tokens,
@@ -115,6 +121,7 @@ if __name__ == "__main__":
     run_evaluation(
         args.model_id,
         sae_paths,
+        args.dataset_name,
         config.eval_num_inputs,
         args.device,
         overwrite_prev_results=True,

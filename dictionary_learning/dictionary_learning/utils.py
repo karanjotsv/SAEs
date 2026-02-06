@@ -30,6 +30,18 @@ def hf_dataset_to_generator(dataset_name, split="train", streaming=True):
     return gen()
 
 
+def json_dataset_to_generator(path):
+    def gen():
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)   # list of dicts
+            for item in data:
+                # each item has exactly one key-value pair
+                _, content = next(iter(item.items()))
+                yield content["prompt"]
+
+    return gen()
+
+
 def zst_to_generator(data_path):
     """
     Load a dataset from a .jsonl.zst file.

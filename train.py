@@ -9,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import config as dataset_config
 
 import dictionary_learning.utils as utils
-from dictionary_learning.utils import hf_dataset_to_generator
+from dictionary_learning.utils import hf_dataset_to_generator, json_dataset_to_generator
 from dictionary_learning.pytorch_buffer import ActivationBuffer
 from dictionary_learning.training import trainSAE
 from dictionary_learning.evaluation import evaluate
@@ -22,6 +22,7 @@ def run_training(
     model_id: str,
     save_dir: str,
     device: str,
+    dataset_name: str,
     architectures: list,
     num_tokens: int,
     random_seeds: list[int],
@@ -101,9 +102,11 @@ def run_training(
             "\n\nWARNING: Qwen models do not have a bos token, we will remove the first non-pad token"
         )
     ###
-    generator = hf_dataset_to_generator(
-        "cornell-movie-review-data/rotten_tomatoes",
-    )
+    if dataset_name in ['alpaca', 'alpaca_mt']:
+        generator = json_dataset_to_generator(f"{dataset_name}.json")
+    else:
+        generator = hf_dataset_to_generator(dataset_name=dataset_name)
+    
     ###
     activation_buffer = ActivationBuffer(
         generator,
@@ -136,7 +139,7 @@ def run_training(
 
     print(f"len trainer configs: {len(trainer_configs)}")
     assert len(trainer_configs) > 0
-    save_dir = f"{save_dir}/{submodule_name}"
+    save_dir = f"{save_dir}/{dataset_name}/{submodule_name}"
 
     if not dry_run:
         # run sweep
@@ -160,6 +163,7 @@ def run_training(
 def run_evaluation(
     model_id: str,
     sae_paths: list[str],
+    dataset_name: str,
     n_inputs: int,
     device: str,
     hf_token: str,
@@ -213,7 +217,7 @@ def run_evaluation(
     io = "out"
     n_batches = n_inputs // loss_recovered_batch_size
 
-    generator = hf_dataset_to_generator("monology/pile-uncopyrighted")
+    generator = json_dataset_to_generator(f"{dataset_name}.json")
 
     input_strings = []
     for i, example in enumerate(generator):

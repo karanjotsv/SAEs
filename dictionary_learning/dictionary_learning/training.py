@@ -247,7 +247,7 @@ def trainSAE(
                     "ae": trainer.ae.state_dict(),
                     "optimizer": trainer.optimizer.state_dict(),
                     "config": trainer.config,
-                    "norm_factor": norm_factor,
+                    # "norm_factor": norm_factor,
                     },
                     os.path.join(save_dir, "ae.pt"),
                 )
