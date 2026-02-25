@@ -74,7 +74,7 @@ K_ANNEAL_END_FRACTION = 0.01
 remove_bos = True
 max_activation_norm_multiple = 10
 
-learning_rates = [5e-5]
+learning_rates = [1e-5]
 
 
 wandb_project = "qwen-8b-sweep"  # ???
@@ -104,14 +104,15 @@ LLM_CONFIG = {
 }
 
 SPARSITY_PENALTIES = SparsityPenalties(
-    standard=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
+    standard=[0.02, 0.04],
+    # standard=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
     standard_new=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
     p_anneal=[0.006, 0.008, 0.01, 0.015, 0.02, 0.025],
     gated=[0.012, 0.018, 0.024, 0.04, 0.06, 0.08],
 )
 
 
-TARGET_L0s = [80, 160]
+TARGET_L0s = [10, 50, 100, 500, 1000]
 # TARGET_L0s = [20, 40, 80, 160, 320, 640]
 
 

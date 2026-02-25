@@ -7,7 +7,7 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--dataset", type=str, nargs="+", choices=["alpaca", "topiocqa"], required=True, help="which dataset to use"
+        "--dataset", type=str, nargs="+", choices=["alpaca", "topiocqa", "instruct"], required=True, help="which dataset to use"
     )
     # parser.add_argument(
     #     "--multi_turn", action="store_true", help="follow multi-turn fashion"
@@ -15,6 +15,18 @@ def get_args():
 
     args = parser.parse_args()
     return args
+
+
+def normalize_sentence(text):
+    """fix punctuation if required"""
+    text = text.strip()
+    
+    if not text:
+        return text
+
+    if text[-1] not in ".?!":
+        text += "."
+    return text
 
 
 def load_alpaca(path="chatalpaca-20k.json", multi_turn=True):
@@ -63,18 +75,6 @@ def load_alpaca(path="chatalpaca-20k.json", multi_turn=True):
 
 
 def load_topiocqa(path="topiocqa_train.json"):
-
-    def normalize_sentence(text):
-        """fix punctuation if required"""
-        text = text.strip()
-        
-        if not text:
-            return text
-
-        if text[-1] not in ".?!":
-            text += "."
-        return text
-
     # read json
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -85,20 +85,48 @@ def load_topiocqa(path="topiocqa_train.json"):
         c_id = i["conversation_no"]
         t_id = i["turn_no"]
 
-        context = [normalize_sentence(c) for c in i.get("context", [])]
-        question = normalize_sentence(i["question"])
-        answer = normalize_sentence(i["answer"])
+        cont = [normalize_sentence(c) for c in i.get("context", [])]
+        ques = normalize_sentence(i["question"])
+        ans = normalize_sentence(i["answer"])
         # prompt
-        prompt = " ".join(context + [question])
+        prompt = " ".join(cont + [ques])
         # instance
         instance_id = f"{c_id}_{t_id}"
 
         instances.append({
             instance_id: {
                 "prompt": prompt,
-                "response": answer
+                "response": ans
             }
         })
+
+    return instances
+
+
+def load_instruct(path="instruct_o.json"):
+    # read json
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    instances = []
+    # iterate over instances
+    for t in data.keys():
+        # task
+        for c_id in data[t]:
+            n_turn = len(data[t][c_id]) // 2
+
+            for i in range(n_turn):
+                # turns
+                ques = data[t][c_id][ : i * 2 + 1]
+                ans = data[t][c_id][i * 2 + 1]
+
+                instances.append({
+                    f'{c_id}_{i}': {
+                        "prompt": " ".join([normalize_sentence(x['text']) for x in ques]),
+                        "response": ans["text"],
+                        "task": t
+                    }
+                })
 
     return instances
 
@@ -108,7 +136,8 @@ if __name__ == '__main__':
 
     func_map = {
         'alpaca': load_alpaca,
-        'topiocqa': load_topiocqa
+        'topiocqa': load_topiocqa,
+        'instruct': load_instruct
     }
 
     for dataset in args.dataset:

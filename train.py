@@ -102,7 +102,7 @@ def run_training(
             "\n\nWARNING: Qwen models do not have a bos token, we will remove the first non-pad token"
         )
     ###
-    if dataset_name in ['alpaca', 'alpaca_mt']:
+    if dataset_name in ['alpaca', 'alpaca_mt', 'instruct']:
         generator = json_dataset_to_generator(f"{dataset_name}.json")
     else:
         generator = hf_dataset_to_generator(dataset_name=dataset_name)
