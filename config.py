@@ -58,33 +58,32 @@ class SparsityPenalties:
     gated: list[float]
 
 
-num_tokens = 500_000_000
+num_tokens = 50_000_000
 
 print(f"NOTE: Training on {num_tokens} tokens")
 
-eval_num_inputs = 200
+eval_num_inputs = 1000
 random_seeds = [0]
-# dictionary_widths = [2**14, 2**16]
-dictionary_widths = [2**14]
+dictionary_widths = [2**14, 2**16]
 
 WARMUP_STEPS = 1000
-SPARSITY_WARMUP_STEPS = 5000
+SPARSITY_WARMUP_STEPS = 2000
 DECAY_START_FRACTION = 0.8
-K_ANNEAL_END_FRACTION = 0.01
+K_ANNEAL_END_FRACTION = 0.1
 remove_bos = True
 max_activation_norm_multiple = 10
 
-learning_rates = [1e-5]
+learning_rates = [1e-4]
 
 
 wandb_project = "qwen-8b-sweep"  # ???
 
 LLM_CONFIG = {
-    "EleutherAI/pythia-70m-deduped": LLMConfig(
+    "EleutherAI/pythia-70m": LLMConfig(
         llm_batch_size=64, context_length=1024, sae_batch_size=2048, dtype=t.float32
     ),
-    "EleutherAI/pythia-160m-deduped": LLMConfig(
-        llm_batch_size=32, context_length=1024, sae_batch_size=2048, dtype=t.float32
+    "EleutherAI/pythia-160m": LLMConfig(
+        llm_batch_size=32, context_length=1024, sae_batch_size=4096, dtype=t.float32
     ),
     "google/gemma-2-2b": LLMConfig(
         llm_batch_size=4, context_length=1024, sae_batch_size=2048, dtype=t.bfloat16
@@ -104,7 +103,7 @@ LLM_CONFIG = {
 }
 
 SPARSITY_PENALTIES = SparsityPenalties(
-    standard=[0.02, 0.04],
+    standard=[0.02, 0.04, 0.06, 0.08, 0.16, 0.32],
     # standard=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
     standard_new=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
     p_anneal=[0.006, 0.008, 0.01, 0.015, 0.02, 0.025],
@@ -112,7 +111,7 @@ SPARSITY_PENALTIES = SparsityPenalties(
 )
 
 
-TARGET_L0s = [10, 50, 100, 500, 1000]
+TARGET_L0s = [10, 50, 100, 250, 500]
 # TARGET_L0s = [20, 40, 80, 160, 320, 640]
 
 
@@ -174,8 +173,8 @@ class TopKTrainerConfig(BaseTrainerConfig):
     k: int
     auxk_alpha: float = 1 / 32
     threshold_beta: float = 0.999
-    threshold_start_step: int = 1000  # when to begin tracking the average threshold
-    k_anneal_steps: Optional[int] = None
+    threshold_start_step: int = 2000  # when to begin tracking the average threshold
+    k_anneal_steps: Optional[int] = 3000
 
 
 @dataclass

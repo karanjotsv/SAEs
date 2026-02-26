@@ -130,7 +130,7 @@ class AutoEncoder(Dictionary, nn.Module):
         """
         if not load_from_sae_lens:
             state_dict = t.load(path)
-            activation_dim, dict_size = state_dict["encoder.weight"].shape
+            dict_size, activation_dim = state_dict["encoder.weight"].shape
             autoencoder = cls(activation_dim, dict_size)
             autoencoder.load_state_dict(state_dict)
         else:

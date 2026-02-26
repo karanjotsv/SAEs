@@ -33,7 +33,7 @@ def run_training(
     dry_run: bool = False,
     use_wandb: bool = False,
     save_checkpoints: bool = False,
-    buffer_tokens: int = 250_000,
+    buffer_tokens: int = 50_000,
 ):
     """
     Train SAE models on the given dataset.

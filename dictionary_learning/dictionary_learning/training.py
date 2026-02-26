@@ -195,7 +195,6 @@ def trainSAE(
             trainer.ae.scale_biases(1.0)
 
     for step, act in enumerate(tqdm(data, total=steps)):
-
         act = act.to(dtype=autocast_dtype)
 
         if normalize_activations:
@@ -256,7 +255,7 @@ def trainSAE(
         for trainer in trainers:
             with autocast_context:
                 trainer.update(step, act)
-
+    
     # save final SAEs
     for save_dir, trainer in zip(save_dirs, trainers):
         if normalize_activations:

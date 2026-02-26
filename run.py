@@ -77,7 +77,7 @@ if __name__ == "__main__":
     start_time = time.time()
 
     save_dir = (
-        f"{args.save_dir}_{args.model_id}_{'_'.join(args.architectures)}".replace(
+        f"{args.save_dir}_{args.model_id.split('/')[-1]}_{'_'.join(args.architectures)}".replace(
             "/", "_"
         )
     )
