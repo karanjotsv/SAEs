@@ -1,6 +1,9 @@
 import os
 import json
+import random
 import argparse
+
+from dictionary_learning.config import random_seeds
 
 
 def get_args():
@@ -8,6 +11,9 @@ def get_args():
 
     parser.add_argument(
         "--dataset", type=str, nargs="+", choices=["alpaca", "topiocqa", "instruct"], required=True, help="which dataset to use"
+    )
+    parser.add_argument(
+        "--ratio", type=float, required=True, help="test size"
     )
     # parser.add_argument(
     #     "--multi_turn", action="store_true", help="follow multi-turn fashion"
@@ -103,7 +109,7 @@ def load_topiocqa(path="topiocqa_train.json"):
     return instances
 
 
-def load_instruct(path="instruct_o.json"):
+def load_instruct(path="dataset.json", mt=False):
     # read json
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -115,8 +121,23 @@ def load_instruct(path="instruct_o.json"):
         for c_id in data[t]:
             n_turn = len(data[t][c_id]) // 2
 
-            for i in range(n_turn):
-                # turns
+            if mt:
+                for i in range(n_turn):
+                    # turns
+                    ques = data[t][c_id][ : i * 2 + 1]
+                    ans = data[t][c_id][i * 2 + 1]
+
+                    instances.append({
+                        f'{c_id}_{i}': {
+                            "prompt": " ".join([normalize_sentence(x['text']) for x in ques]),
+                            "response": ans["text"],
+                            "reference": ans["evaluation_reference"],
+                            "task": t
+                        }
+                    })
+            else:
+                i = n_turn - 1
+
                 ques = data[t][c_id][ : i * 2 + 1]
                 ans = data[t][c_id][i * 2 + 1]
 
@@ -124,15 +145,18 @@ def load_instruct(path="instruct_o.json"):
                     f'{c_id}_{i}': {
                         "prompt": " ".join([normalize_sentence(x['text']) for x in ques]),
                         "response": ans["text"],
-                        "task": t
+                        "reference": ans["evaluation_reference"],
+                        "task": t,
+                        "metric": ans["evaluation_metric"]
                     }
                 })
-
+            
     return instances
 
 
 if __name__ == '__main__':
     args = get_args()
+    random.seed(random_seeds[0])
 
     func_map = {
         'alpaca': load_alpaca,
@@ -143,8 +167,18 @@ if __name__ == '__main__':
     for dataset in args.dataset:
         instances = func_map[dataset]()
 
-        fname = f'{dataset}.json'
-        with open(fname, "w", encoding="utf-8") as f:
-            json.dump(instances, f, ensure_ascii=False, indent=4)
+        random.shuffle(instances)
+
+        i = int(args.ratio * len(instances))
+
+        ins = {
+            'train': instances[i : ],
+            'test': instances[ : i]
+        }
+
+        for d in ins.keys():
+            fname = f'{dataset}_{d[ : 2]}.json'
+            with open(fname, "w", encoding="utf-8") as f:
+                json.dump(instances, f, ensure_ascii=False, indent=4)
 
 # python3 dataset.py --dataset alpaca 

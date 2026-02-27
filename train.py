@@ -103,7 +103,7 @@ def run_training(
         )
     ###
     if dataset_name in ['alpaca', 'alpaca_mt', 'instruct']:
-        generator = json_dataset_to_generator(f"{dataset_name}.json")
+        generator = json_dataset_to_generator(f"{dataset_name}_tr.json")
     else:
         generator = hf_dataset_to_generator(dataset_name=dataset_name)
     
@@ -217,7 +217,7 @@ def run_evaluation(
     io = "out"
     n_batches = n_inputs // loss_recovered_batch_size
 
-    generator = json_dataset_to_generator(f"{dataset_name}.json")
+    generator = json_dataset_to_generator(f"{dataset_name}_te.json")
 
     input_strings = []
     for i, example in enumerate(generator):

@@ -182,6 +182,15 @@ def evaluate(
         l2_loss = t.linalg.norm(x - x_hat, dim=-1).mean()
         l1_loss = f.norm(p=1, dim=-1).mean()
         l0 = (f != 0).float().sum(dim=-1).mean()
+
+        # MSE
+        x_flat = t.flatten(x, start_dim=0, end_dim=-2)
+        x_hat_flat = t.flatten(x_hat, start_dim=0, end_dim=-2)
+
+        x_mean = x_flat.mean(dim=0, keepdim=True)
+        ss_res = ((x_flat - x_hat_flat) ** 2).sum()
+        ss_tot = ((x_flat - x_mean) ** 2).sum()
+        r2 = 1 - (ss_res / (ss_tot + 1e-8))
         
         features_BF = t.flatten(f, start_dim=0, end_dim=-2).to(dtype=t.float32) # If f is shape (B, L, D), flatten to (B*L, D)
         assert features_BF.shape[-1] == dictionary.dict_size
@@ -197,23 +206,18 @@ def evaluate(
         # l2 ratio
         l2_ratio = (t.linalg.norm(x_hat, dim=-1) / t.linalg.norm(x, dim=-1)).mean()
 
-        #compute variance explained
-        total_variance = t.var(x, dim=0).sum()
-        residual_variance = t.var(x - x_hat, dim=0).sum()
-        frac_variance_explained = (1 - residual_variance / total_variance)
-
         # Equation 10 from https://arxiv.org/abs/2404.16014
         x_hat_norm_squared = t.linalg.norm(x_hat, dim=-1, ord=2)**2
         x_dot_x_hat = (x * x_hat).sum(dim=-1)
-        relative_reconstruction_bias = x_hat_norm_squared.mean() / x_dot_x_hat.mean()
+        bias_ratio = x_hat_norm_squared.mean() / x_dot_x_hat.mean()
 
+        out["r2"] += r2.item()
         out["l2_loss"] += l2_loss.item()
         out["l1_loss"] += l1_loss.item()
         out["l0"] += l0.item()
-        out["frac_variance_explained"] += frac_variance_explained.item()
         out["cossim"] += cossim.item()
         out["l2_ratio"] += l2_ratio.item()
-        out['relative_reconstruction_bias'] += relative_reconstruction_bias.item()
+        out["recon_bias"] += bias_ratio.item()
 
         if not isinstance(activations, (ActivationBuffer, NNsightActivationBuffer)):
             continue
@@ -231,10 +235,10 @@ def evaluate(
         )
         frac_recovered = (loss_reconstructed - loss_zero) / (loss_original - loss_zero)
         
-        out["loss_original"] += loss_original.item()
-        out["loss_reconstructed"] += loss_reconstructed.item()
+        out["loss_ori"] += loss_original.item()
+        out["loss_recon"] += loss_reconstructed.item()
         out["loss_zero"] += loss_zero.item()
-        out["frac_recovered"] += frac_recovered.item()
+        out["frac_recov"] += frac_recovered.item()
 
     out = {key: value / n_batches for key, value in out.items()}
     frac_alive = (active_features != 0).float().sum() / dictionary.dict_size

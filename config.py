@@ -62,9 +62,9 @@ num_tokens = 50_000_000
 
 print(f"NOTE: Training on {num_tokens} tokens")
 
-eval_num_inputs = 1000
+eval_num_inputs = 50_000
 random_seeds = [0]
-dictionary_widths = [2**14, 2**16]
+dictionary_widths = [2**12]
 
 WARMUP_STEPS = 1000
 SPARSITY_WARMUP_STEPS = 2000
@@ -83,7 +83,7 @@ LLM_CONFIG = {
         llm_batch_size=64, context_length=1024, sae_batch_size=2048, dtype=t.float32
     ),
     "EleutherAI/pythia-160m": LLMConfig(
-        llm_batch_size=32, context_length=1024, sae_batch_size=4096, dtype=t.float32
+        llm_batch_size=32, context_length=2048, sae_batch_size=4096, dtype=t.float32
     ),
     "google/gemma-2-2b": LLMConfig(
         llm_batch_size=4, context_length=1024, sae_batch_size=2048, dtype=t.bfloat16
@@ -103,15 +103,14 @@ LLM_CONFIG = {
 }
 
 SPARSITY_PENALTIES = SparsityPenalties(
-    standard=[0.02, 0.04, 0.06, 0.08, 0.16, 0.32],
-    # standard=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
-    standard_new=[0.012, 0.015, 0.02, 0.03, 0.04, 0.06],
+    standard=[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+    standard_new=[0.02, 0.04, 0.08, 0.16],
     p_anneal=[0.006, 0.008, 0.01, 0.015, 0.02, 0.025],
     gated=[0.012, 0.018, 0.024, 0.04, 0.06, 0.08],
 )
 
 
-TARGET_L0s = [10, 50, 100, 250, 500]
+TARGET_L0s = [50, 100, 200, 300, 400, 500, 550]
 # TARGET_L0s = [20, 40, 80, 160, 320, 640]
 
 
