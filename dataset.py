@@ -109,7 +109,7 @@ def load_topiocqa(path="topiocqa_train.json"):
     return instances
 
 
-def load_instruct(path="dataset.json", mt=False):
+def load_instruct(path="dataset.json", mt=True):
     # read json
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -167,19 +167,25 @@ if __name__ == '__main__':
     for dataset in args.dataset:
         instances = func_map[dataset]()
 
-        random.shuffle(instances)
+        if args.ratio > 0:
+            random.shuffle(instances)
 
-        i = int(args.ratio * len(instances))
-        print(f"test size: {i}")
+            i = int(args.ratio * len(instances))
+            print(f"test size: {i}")
 
-        ins = {
-            'train': instances[i : ],
-            'test': instances[ : i]
-        }
+            ins = {
+                'train': instances[i : ],
+                'test': instances[ : i]
+            }
 
-        for d in ins.keys():
-            fname = f'{dataset}_{d[ : 2]}.json'
+            for d in ins.keys():
+                fname = f'{dataset}_{d[ : 2]}.json'
+                with open(fname, "w", encoding="utf-8") as f:
+                    json.dump(instances, f, ensure_ascii=False, indent=4)
+        else:
+            fname = f'{dataset}.json'
             with open(fname, "w", encoding="utf-8") as f:
                 json.dump(instances, f, ensure_ascii=False, indent=4)
+
 
 # python3 dataset.py --dataset alpaca 
