@@ -58,16 +58,14 @@ class SparsityPenalties:
     gated: list[float]
 
 
-num_tokens = 50_000_000
-
+num_tokens = 10_000_000
 print(f"NOTE: Training on {num_tokens} tokens")
 
-eval_num_inputs = 50_000
 random_seeds = [0]
-dictionary_widths = [2**12]
+dictionary_widths = [2**16]
 
-WARMUP_STEPS = 1000
-SPARSITY_WARMUP_STEPS = 2000
+WARMUP_STEPS = 200
+SPARSITY_WARMUP_STEPS = 400
 DECAY_START_FRACTION = 0.8
 K_ANNEAL_END_FRACTION = 0.1
 remove_bos = True
@@ -108,7 +106,6 @@ SPARSITY_PENALTIES = SparsityPenalties(
     p_anneal=[0.006, 0.008, 0.01, 0.015, 0.02, 0.025],
     gated=[0.012, 0.018, 0.024, 0.04, 0.06, 0.08],
 )
-
 
 TARGET_L0s = [50, 100, 200, 300, 400, 500, 550]
 # TARGET_L0s = [20, 40, 80, 160, 320, 640]

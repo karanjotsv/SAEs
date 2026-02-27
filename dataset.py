@@ -3,7 +3,7 @@ import json
 import random
 import argparse
 
-from dictionary_learning.config import random_seeds
+# from dictionary_learning.config import random_seeds
 
 
 def get_args():
@@ -156,7 +156,7 @@ def load_instruct(path="dataset.json", mt=False):
 
 if __name__ == '__main__':
     args = get_args()
-    random.seed(random_seeds[0])
+    random.seed(0)
 
     func_map = {
         'alpaca': load_alpaca,
@@ -170,6 +170,7 @@ if __name__ == '__main__':
         random.shuffle(instances)
 
         i = int(args.ratio * len(instances))
+        print(f"test size: {i}")
 
         ins = {
             'train': instances[i : ],

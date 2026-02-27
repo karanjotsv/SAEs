@@ -122,7 +122,6 @@ if __name__ == "__main__":
         args.model_id,
         sae_paths,
         args.dataset_name,
-        config.eval_num_inputs,
         args.device,
         overwrite_prev_results=True,
         hf_token=hf_token,

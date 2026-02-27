@@ -164,7 +164,7 @@ def run_evaluation(
     model_id: str,
     sae_paths: list[str],
     dataset_name: str,
-    n_inputs: int,
+    # n_inputs: int,
     device: str,
     hf_token: str,
     config,
@@ -213,6 +213,7 @@ def run_evaluation(
     model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", token=hf_token, dtype=dtype)
     model = utils.truncate_model(model, max_layer)
 
+    n_inputs = len(json.load(open(f"{dataset_name}_te.json")))
     buffer_size = n_inputs
     io = "out"
     n_batches = n_inputs // loss_recovered_batch_size

@@ -301,7 +301,7 @@ def get_submodule(model: AutoModelForCausalLM, layer: int=None):
     if model.config.architectures[0] == "GPTNeoXForCausalLM":
         if layer is None:
             return model.gpt_neox.layers[-1], len(model.gpt_neox.layers) - 1
-        return model.gpt_neox.layers[layer - 1], layer - 1
+        return model.gpt_neox.layers[layer - 1], layer
     elif (
         model.config.architectures[0] == "Qwen2ForCausalLM"
         or model.config.architectures[0] == "Gemma2ForCausalLM"
@@ -309,7 +309,7 @@ def get_submodule(model: AutoModelForCausalLM, layer: int=None):
     ):
         if layer is None:
             return model.model.layers[-1], len(model.model.layers) - 1
-        return model.model.layers[layer - 1], layer - 1
+        return model.model.layers[layer - 1], layer
     else:
         raise ValueError(f"Please add valid submodule for model {model_name}")
 
@@ -346,7 +346,7 @@ def truncate_model(model: AutoModelForCausalLM, layer: int=None):
         if layer is None:
             last_layer_index = len(model.gpt_neox.layers) - 1
         else:
-            last_layer_index = layer
+            last_layer_index = layer - 1
         removed_layers = model.gpt_neox.layers[last_layer_index + 1:]
 
         model.gpt_neox.layers = model.gpt_neox.layers[: last_layer_index + 1]
