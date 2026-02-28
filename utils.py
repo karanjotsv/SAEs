@@ -39,11 +39,19 @@ def matching_any(pred_text, refs):
     return float(any(r.lower() in p for r in refs))
 
 
+def matching_none(pred_text, refs):
+    p = pred_text.lower()
+
+    return float(not any(r.lower() in p for r in refs))
+
+
 def eval_metric(metric, pred_text, refs):
     if metric == "matching_any_exact":
         return matching_all(pred_text, refs)
     elif metric == "matching_any":
         return matching_any(pred_text, refs)
+    elif metric == "not_matching_any":
+        return matching_none(pred_text, refs)
     else:
         raise ValueError(f"unexpected metric for selected tasks: {metric}")
 # -----------------------
@@ -146,21 +154,26 @@ def avg_token_activation_rate(feats, mask, threshold: float):
         return fired_counts / num_tokens  # [D]
 
 
-def generate(model, tokenizer, prompt, max_new_tokens=4, device="cpu"):
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+def generate(model, tokenizer, messages, max_new_tokens=256, device="cpu"):
+    
+    inputs = tokenizer.apply_chat_template(
+        messages, 
+        tokenize=True, 
+        add_generation_prompt=True, 
+        return_tensors="pt",
+        return_dict=True
+    ).to(device)
 
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id
         )
 
     return tokenizer.decode(
         outputs[0][inputs["input_ids"].shape[1]:],
-        skip_special_tokens=True
     ).strip()
 
 
@@ -175,7 +188,7 @@ def run_evaluation(dataset, model, tokenizer, out_path, ids_path, tasks, device,
         metric = x["metric"]
         refs = x.get("reference", [])
         # run inference
-        pred = re.sub(r"[^\w\s:]", "", generate(model, tokenizer, x["prompt"], device=device))
+        pred = generate(model, tokenizer, x["messages"], device=device)
         score = eval_metric(metric, pred, refs) 
         # store output 
         x["prediction"] = pred

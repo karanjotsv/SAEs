@@ -10,7 +10,7 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--dataset", type=str, nargs="+", choices=["alpaca", "topiocqa", "instruct"], required=True, help="which dataset to use"
+        "--dataset", type=str, nargs="+", choices=["instruct"], required=True, help="which dataset to use"
     )
     parser.add_argument(
         "--ratio", type=float, required=True, help="test size"
@@ -35,81 +35,7 @@ def normalize_sentence(text):
     return text
 
 
-def load_alpaca(path="chatalpaca-20k.json", multi_turn=True):
-    """
-    Load a chatalpaca from a jsonl file.
-
-    Parameters:
-    path (str): Path to the jsonl file.
-    multi_turn (bool): If True, the dataset will be processed as multi-turn dialogue. If False, the dataset will be processed as single-turn dialogue.
-
-    Returns:
-    list: A list of dictionaries, where each dictionary contains the id, prompt and response of a sample.
-    """
-    # read jsonl
-    data = []
-    
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            # remove \n
-            line = line.strip()
-            if not line:
-                continue
-            data.append(json.loads(line))
-    # iterate over instances
-    instances = []
-
-    for i in data:
-        # iterate over conversation
-        if multi_turn:
-            for j in range(len(i['conversations']) // 2):
-                instances.append({
-                    str(i['id']) + '_' + str(j): {
-                        'prompt': " ".join([d['value'] for d in i['conversations'][: (j * 2) + 1]]),
-                        'response': i['conversations'][(j * 2) + 1]['value']
-                    }
-                })
-        else:
-            instances.append({
-                str(i['id']): {
-                    'prompt': " ".join([d['value'] for d in i['conversations'][ : -1]]),
-                    'response': i['conversations'][-1]['value']
-                }
-            })
-
-    return instances
-
-
-def load_topiocqa(path="topiocqa_train.json"):
-    # read json
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    instances = []
-    # iterate over instances
-    for i in data:
-        c_id = i["conversation_no"]
-        t_id = i["turn_no"]
-
-        cont = [normalize_sentence(c) for c in i.get("context", [])]
-        ques = normalize_sentence(i["question"])
-        ans = normalize_sentence(i["answer"])
-        # prompt
-        prompt = " ".join(cont + [ques])
-        # instance
-        instance_id = f"{c_id}_{t_id}"
-
-        instances.append({
-            instance_id: {
-                "prompt": prompt,
-                "response": ans
-            }
-        })
-
-    return instances
-
-
-def load_instruct(path="dataset.json", mt=True):
+def load_instruct(path="./instruct/dataset.json", mt=False):
     # read json
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -129,7 +55,12 @@ def load_instruct(path="dataset.json", mt=True):
 
                     instances.append({
                         f'{c_id}_{i}': {
-                            "prompt": " ".join([normalize_sentence(x['text']) for x in ques]),
+                            "messages": [
+                                {
+                                "role": x["role"],
+                                "content": normalize_sentence(x['text'])
+                                } for x in ques
+                            ],
                             "response": ans["text"],
                             "reference": ans["evaluation_reference"],
                             "task": t
@@ -143,7 +74,12 @@ def load_instruct(path="dataset.json", mt=True):
 
                 instances.append({
                     f'{c_id}_{i}': {
-                        "prompt": " ".join([normalize_sentence(x['text']) for x in ques]),
+                        "messages": [
+                                {
+                                "role": x["role"],
+                                "content": normalize_sentence(x['text'])
+                                } for x in ques
+                            ],
                         "response": ans["text"],
                         "reference": ans["evaluation_reference"],
                         "task": t,
@@ -159,8 +95,6 @@ if __name__ == '__main__':
     random.seed(0)
 
     func_map = {
-        'alpaca': load_alpaca,
-        'topiocqa': load_topiocqa,
         'instruct': load_instruct
     }
 
@@ -179,7 +113,7 @@ if __name__ == '__main__':
             }
 
             for d in ins.keys():
-                fname = f'{dataset}_{d[ : 2]}.json'
+                fname = f'{dataset}_{d}.json'
                 with open(fname, "w", encoding="utf-8") as f:
                     json.dump(instances, f, ensure_ascii=False, indent=4)
         else:
