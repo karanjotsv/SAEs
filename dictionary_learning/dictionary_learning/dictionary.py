@@ -1,11 +1,16 @@
 """
 Defines the dictionary classes
 """
-
+import os
 from abc import ABC, abstractmethod
+
 import torch as t
 import torch.nn as nn
 import torch.nn.init as init
+from safetensors.torch import load_file, save_file
+
+from sae_lens import SAE
+
 import einops
 
 
@@ -134,45 +139,53 @@ class AutoEncoder(Dictionary, nn.Module):
             autoencoder = cls(activation_dim, dict_size)
             autoencoder.load_state_dict(state_dict)
         else:
-            from sae_lens import SAE
-
-            sae, cfg_dict, _ = SAE.from_pretrained(**kwargs)
             # fix keys
-            to_rename = {
-                'W_enc': 'encoder.weight',
-                'b_enc': 'encoder.bias',
-                'W_dec': 'decoder.weight',
-                'b_dec': 'bias',
-            }
-            state_dict = {}
-            for k, v in sae.state_dict().items():
-                # skip threshold
-                if k == "threshold":
-                    continue
-                _k = to_rename.get(k, k)
-                # transpose
-                if _k in ("encoder.weight", "decoder.weight"):
-                    v = v.t().contiguous()
+            weights_path = os.path.join(path, "sae_weights.safetensors")
+            state_dict = load_file(weights_path)
 
-                state_dict[_k] = v
+            # transpose if using original keys
+            if "encoder.weight" in state_dict:
+                rename_map = {
+                    "encoder.weight": "W_enc",
+                    "encoder.bias": "b_enc",
+                    "decoder.weight": "W_dec",
+                    "decoder.bias": "b_dec",
+                }
+                new_state_dict = {}
+                for old_key, value in state_dict.items():
+                    new_key = rename_map.get(old_key, old_key)
+                    if new_key in ["W_enc", "W_dec"]:
+                        # transpose and make contiguous for SAELens v6 compatibility
+                        new_state_dict[new_key] = value.T.contiguous()
+                    else:
+                        new_state_dict[new_key] = value
 
-            if "finetuning_scaling_factor" in cfg_dict.keys():
-                assert (
-                    cfg_dict["finetuning_scaling_factor"] == False
-                ), "Finetuning scaling factor not supported"
-            dict_size, activation_dim = cfg_dict["d_sae"], cfg_dict["d_in"]
+                save_file(new_state_dict, weights_path)
+
+                state_dict = new_state_dict  # update reference for the rest of the function
+
+            # lad via sae-lens
+            sae, cfg_dict, _ = SAE.load_from_disk(path=path, **kwargs)
+
+            # transpose back for the dictionary_learning object's internal use
+            dict_size, activation_dim = cfg_dict['d_sae'], cfg_dict['d_in']
             autoencoder = cls(activation_dim, dict_size)
-            autoencoder.load_state_dict(state_dict)
-            autoencoder.apply_b_dec_to_input = cfg_dict["apply_b_dec_to_input"]
+            
+            # dictionary Learning expects original orientation and specific keys
+            dl_state_dict = {
+                "encoder.weight": sae.state_dict()["W_enc"].T.contiguous(),
+                "encoder.bias": sae.state_dict()["b_enc"],
+                "decoder.weight": sae.state_dict()["W_dec"].T.contiguous(),
+                "bias": sae.state_dict()["b_dec"] 
+            }
+            autoencoder.load_state_dict(dl_state_dict)
+            autoencoder.apply_b_dec_to_input = getattr(cfg_dict, "apply_b_dec_to_input", True)
 
-        # This is useful for doing analysis where e.g. feature activation magnitudes are important
-        # If training the SAE using the April update, the decoder weights are not normalized
         if normalize_decoder:
             autoencoder.normalize_decoder()
-
         if device is not None:
             autoencoder.to(dtype=dtype, device=device)
-
+        
         return autoencoder
 
 
