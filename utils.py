@@ -3,6 +3,9 @@ import json
 from tqdm import tqdm
 
 import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+from dictionary_learning import AutoEncoder
 
 
 def get_subset(data_path, tasks):
@@ -25,25 +28,21 @@ def extract_choices(text):
 
     return {letters[-1]} if letters else set()
 
-
 def matching_all(pred_text, refs):
     pred = extract_choices(pred_text)
     gold = {r.upper() for r in refs}
 
     return float(len(pred & gold) > 0)
 
-
 def matching_any(pred_text, refs):
     p = pred_text.lower()
 
     return float(any(r.lower() in p for r in refs))
 
-
 def matching_none(pred_text, refs):
     p = pred_text.lower()
 
     return float(not any(r.lower() in p for r in refs))
-
 
 def eval_metric(metric, pred_text, refs):
     if metric == "matching_any_exact":
@@ -55,47 +54,6 @@ def eval_metric(metric, pred_text, refs):
     else:
         raise ValueError(f"unexpected metric for selected tasks: {metric}")
 # -----------------------
-
-def get_conversations(task, outcome, num_conversations, num_turns, ids_path="./ids.json", instruct_path="./instruct_mt.json"):
-    # return empty if no conversations needed
-    if num_conversations <= 0: return []
-    
-    # load conversation ids for given task/outcome
-    id_list = json.load(open(ids_path))[task][outcome]
-    
-    # extract unique (conversation_id, max_turn)
-    conv_meta, seen_ids = [], set()
-    for i in id_list:
-        conv_id, max_turn = i.rsplit("_", 1)
-        if conv_id not in seen_ids:
-            seen_ids.add(conv_id)
-            conv_meta.append((conv_id, int(max_turn)))
-    
-    # build mapping: conversation_id -> {turn_index: payload}
-    conv_turns = {}
-    for i in json.load(open(instruct_path)):
-        key, payload = next(iter(i.items()))
-        conv_id, turn_id = key.rsplit("_", 1)
-        conv_turns.setdefault(conv_id, {})[int(turn_id)] = payload
-    
-    # assemble conversations in order (only exact num_turns)
-    conversations = []
-    for conv_id, max_turn in conv_meta:
-        # ensure conversation has exactly the requested number of turns
-        if max_turn + 1 != num_turns:
-            continue
-
-        turn_map = conv_turns.get(conv_id, {})
-        
-        # ensure all required turns exist (0 .. num_turns-1)
-        if all(i in turn_map for i in range(num_turns)):
-            conversations.append([turn_map[i]["prompt"] for i in range(num_turns)])
-            
-            # stop
-            if len(conversations) == num_conversations: break
-
-    return conversations
-
 
 @torch.no_grad()
 def hidden_states_and_mask(text, tokenizer, model, hs_index, device):
@@ -154,62 +112,129 @@ def avg_token_activation_rate(feats, mask, threshold: float):
         return fired_counts / num_tokens  # [D]
 
 
-def generate(model, tokenizer, messages, max_new_tokens=256, device="cpu"):
-    
-    inputs = tokenizer.apply_chat_template(
-        messages, 
-        tokenize=True, 
-        add_generation_prompt=True, 
-        return_tensors="pt",
-        return_dict=True
-    ).to(device)
+class generate:
+    def __init__(self, model_id, sae_id, device="cpu"):
+        # load the tokenizer from the hub
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        
+        # ensure a padding token exists for batching
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+        # load model using the transformers library framework
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_id, 
+            torch_dtype='auto'
+        ).to(device).eval()
 
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            eos_token_id=tokenizer.eos_token_id,
-            pad_token_id=tokenizer.eos_token_id
+        # load the autoencoder for feature extraction
+        self.sae = AutoEncoder.from_pretrained(
+            path=sae_id, 
+            load_from_sae_lens=True, 
+            device=device
         )
 
-    return tokenizer.decode(
-        outputs[0][inputs["input_ids"].shape[1]:],
-    ).strip()
+        self.device = device
+        # storage for captured activations
+        self.current_activations = None
 
+    def hook_fn(self, module, input, output):
+        # capture hidden states from the specified layer
+        hidden_states = output if isinstance(output, tuple) else output
+        self.current_activations = hidden_states
 
-def run_evaluation(dataset, model, tokenizer, out_path, ids_path, tasks, device, save_results=True):
-    out = []
+    def encode(self, data):
+        # use the preprocessor to format and tokenize a batch
+        inputs = self.tokenizer.apply_chat_template(
+            data, 
+            tokenize=True, 
+            add_generation_prompt=True,  
+            return_tensors='pt', 
+            return_dict=True,
+            padding=True,
+            truncation=True
+        ).to(self.device)
+        return inputs
 
-    ids = {task: {"success": [], "fail": []} for task in tasks}
+    def decode(self, inputs, outputs):
+        # convert token ids back to human readable text
+        decoded_outputs = []
+        prompt_length = inputs["input_ids"].shape[10]
+        for i in range(len(outputs)):
+            new_tokens = outputs[i][prompt_length:]
+            decoded_outputs.append(self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip())
+        return decoded_outputs
+
+    def generate_batch(self, inputs, max_new_tokens=256):
+        # run inference using optimized infrastructure
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                eos_token_id=self.tokenizer.eos_token_id,
+                pad_token_id=self.tokenizer.pad_token_id
+            )
+        return outputs
+
+    def get_sae_features(self, data, layer):
+        # extract features from multiple inputs in parallel
+        handle = self.model.model.layers[layer].register_forward_hook(self.hook_fn)
+
+        inputs = self.encode(data)
+        with torch.no_grad():
+            self.model(**inputs)
+
+        handle.remove()
+
+        # encode captured activations through the sae
+        feature_activations = self.sae.encode(self.current_activations)
+
+        batch_results = []
+        batch_size = inputs["input_ids"].shape
+        for i in range(batch_size):
+            rt = {
+                "feature_activations": feature_activations[i],
+                "input_ids": inputs["input_ids"][i],
+                "input_tokens": self.tokenizer.convert_ids_to_tokens(inputs["input_ids"][i]),
+                "hidden_states": self.current_activations[i]
+            }
+            batch_results.append(rt)
+
+        return batch_results
+
+    def run(self, data, tasks, out_path, batch_size=4, save_results=True):
+        # process data through a batched pipeline
+        out = []
+        self.ids = {task: {'success': [], 'fail': []} for task in tasks}
     
-    for i, id, x in tqdm(dataset, total=len(dataset)):
-        # metadata
-        task = x["task"]
-        metric = x["metric"]
-        refs = x.get("reference", [])
-        # run inference
-        pred = generate(model, tokenizer, x["messages"], device=device)
-        score = eval_metric(metric, pred, refs) 
-        # store output 
-        x["prediction"] = pred
-        x["score"] = score
+        for i in tqdm(range(0, len(data), batch_size), desc="batch inference"):
+            batch_data = data[i : i + batch_size]
+            
+            inputs = self.encode(batch_data)
+            outputs = self.generate_batch(inputs)
+            preds = self.decode(inputs, outputs)
 
-        out.append({
-            id: x
-        })
+            for j, pred in enumerate(preds):
+                item_data = batch_data[j]
+                # assume the first element in the data tuple is the id
+                item_id = data[i + j][10] 
+                
+                task = item_data['task']
+                metric = item_data['metric']
+                refs = item_data.get('reference', [])
+                
+                # evaluate model performance
+                score = eval_metric(metric, pred, refs) 
+                item_data['prediction'] = pred
+                item_data['score'] = score
 
-        if score >= 1.0:
-            ids[task]["success"].append(id)
-        else:
-            ids[task]["fail"].append(id)
+                out.append({item_id: item_data})
 
-    if save_results:
-        with open(out_path, "w") as f: json.dump(out, f, indent=2, ensure_ascii=False)
-        with open(ids_path, "w") as f: json.dump(ids, f, indent=2, ensure_ascii=False)
-    # summary
-    print(f"per-instance predictions to: {out_path}")
-    print(f"success/fail id lists to: {ids_path}")
+                if score >= 1.0: self.ids[task]['success'].append(item_id)
+                else: self.ids[task]['fail'].append(item_id)
 
-    for task in tasks:
-        print(f"\n== {task} ==")
-        print(f"success: {len(ids[task]['success'])} | fail: {len(ids[task]['fail'])}")
+        if save_results:
+            with open(out_path, 'w') as f: 
+                json.dump(out, f, indent=2, ensure_ascii=False)
+        
+        print(f"results saved to {out_path}")
