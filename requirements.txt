@@ -4,3 +4,4 @@ sae-bench==0.5.1
 sae-lens==6.30.1
 sae-probes==0.3.0
 sae-dashboard==0.7.3
+nbformat>=4.2.

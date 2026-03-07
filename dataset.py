@@ -115,7 +115,7 @@ if __name__ == '__main__':
             for d in ins.keys():
                 fname = f'{dataset}_{d}.json'
                 with open(fname, "w", encoding="utf-8") as f:
-                    json.dump(instances, f, ensure_ascii=False, indent=4)
+                    json.dump(ins[d], f, ensure_ascii=False, indent=4)
         else:
             fname = f'{dataset}.json'
             with open(fname, "w", encoding="utf-8") as f:
