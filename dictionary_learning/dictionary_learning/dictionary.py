@@ -161,9 +161,7 @@ class AutoEncoder(Dictionary, nn.Module):
                         new_state_dict[new_key] = value
 
                 save_file(new_state_dict, weights_path)
-
                 state_dict = new_state_dict  # update reference for the rest of the function
-
             # lad via sae-lens
             sae, cfg_dict, _ = SAE.load_from_disk(path=path, **kwargs)
 

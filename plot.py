@@ -58,7 +58,7 @@ def plot_line(data, x_k, y_k, title=None, xlabel=None, ylabel=None, sort_x=True)
     plt.show()
 
 
-def plot_per_turn(data, normalize=True, show_mean=True):
+def plot_per_turn(data, normalize=True, show_mean=False):
     # collect rows for dataframe
     rows = []
     # iterate through each sample
@@ -68,7 +68,6 @@ def plot_per_turn(data, normalize=True, show_mean=True):
             if len(values) == 0:
                 continue
             values = list(values)
-
             # optionally normalize each feature trajectory by its first value
             if normalize:
                 base = values[0]
@@ -78,7 +77,6 @@ def plot_per_turn(data, normalize=True, show_mean=True):
                     norm_values = [v / base for v in values]
             else:
                 norm_values = values
-
             # add each turn as a row in the dataframe
             for turn_idx, v in enumerate(norm_values):
                 rows.append({
@@ -89,10 +87,8 @@ def plot_per_turn(data, normalize=True, show_mean=True):
                 })
     # create dataframe from collected rows
     df = pd.DataFrame(rows)
-
     if df.empty:
         raise ValueError("no valid data to plot.")
-
     # plot individual trajectories colored by feature rank
     lines = (
         alt.Chart(df)
@@ -138,10 +134,19 @@ def plot_per_turn(data, normalize=True, show_mean=True):
             df.groupby(["feature_rank", "turn"], as_index=False)["activation"]
             .mean()
         )
-        # draw thick black mean lines
+        # permanent label text: omit rank on the first turn
+        mean_df["label"] = mean_df.apply(
+            lambda r: (
+                f"turn {int(r['turn'])}, mean {r['activation']:.4f}"
+                if int(r["turn"]) == 1
+                else f"rank {int(r['feature_rank'])}, turn {int(r['turn'])}, mean {r['activation']:.4f}"
+            ),
+            axis=1
+        )
+        # draw thinner black mean lines
         mean_lines = (
             alt.Chart(mean_df)
-            .mark_line(color="black", strokeWidth=4)
+            .mark_line(color="black", strokeWidth=2, opacity=0.8)
             .encode(
                 x="turn:Q",
                 y="activation:Q",
@@ -168,7 +173,24 @@ def plot_per_turn(data, normalize=True, show_mean=True):
                 ]
             )
         )
-        layers.extend([mean_lines, mean_points])
+        # always-visible labels for mean points
+        mean_labels = (
+            alt.Chart(mean_df)
+            .mark_text(
+                align="left",
+                dx=8,
+                dy=-8,
+                fontSize=11,
+                color="black"
+            )
+            .encode(
+                x="turn:Q",
+                y="activation:Q",
+                detail="feature_rank:N",
+                text="label:N"
+            )
+        )
+        layers.extend([mean_lines, mean_points, mean_labels])
     # add horizontal reference line at 1.0 when normalized
     if normalize:
         rule = (

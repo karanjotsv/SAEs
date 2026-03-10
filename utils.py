@@ -1,13 +1,15 @@
 import re
 import os
 import json
+import tempfile
 from tqdm import tqdm
 from collections import defaultdict
 
-import torch
+import torch as t
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from dictionary_learning import AutoEncoder
+from dictionary_learning.trainers.top_k import AutoEncoderTopK
 
 
 def extract_choices(text):
@@ -47,23 +49,19 @@ def eval_metric(metric, pred_text, refs):
 
 class generate:
     def __init__(self, model_id, sae_id, base_f, device="cpu"):
-
         self.base_f = base_f
         # load the tokenizer from the hub
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        
         # ensure a padding token exists for batching
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-            
         # load model using the transformers library framework
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id, 
             torch_dtype='auto'
         ).to(device).eval()
-
         # load the autoencoder for feature extraction
-        self.sae = AutoEncoder.from_pretrained(
+        self.sae = AutoEncoderTopK.from_pretrained(
             path=sae_id, 
             load_from_sae_lens=True, 
             device=device
@@ -72,7 +70,6 @@ class generate:
         # storage for captured activations
         self.current_activations = None
     
-
     def load_data(self, data_f, tasks):
         self.tasks = tasks
         # load json
@@ -84,12 +81,10 @@ class generate:
                 if ex.get("task") in tasks:
                     self.subset.append((i, key, ex))
 
-
     def hook_fn(self, module, input, output):
         # capture hidden states from the specified layer
         hidden_states = output if isinstance(output, tuple) else output
         self.current_activations = hidden_states
-
 
     def encode(self, data):
         # use the preprocessor to format and tokenize a batch
@@ -104,17 +99,15 @@ class generate:
         ).to(self.device)
         return inputs
 
-
     def decode(self, inputs, outputs):
         input_len = inputs['input_ids'].shape[-1]
         # slice the output to get only the tokens generated after the input
         new_tokens = outputs[0, input_len:] 
         return self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
-
     def generate(self, inputs, max_new_tokens=256):
         # run inference using optimized infrastructure
-        with torch.no_grad():
+        with t.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
@@ -123,16 +116,7 @@ class generate:
             )
         return outputs
     
-
-    def top_features_for_tokens(
-        self,
-        feature_activations,
-        tokens,
-        target_tokens,
-        top_k=20,
-        aggregation='mean',   # 'mean', 'max'
-        exact_match=True,
-    ):
+    def top_features_for_tokens(self, feature_activations, tokens, target_tokens, top_k=20, aggregation='mean', exact_match=True):
         target_set = set(target_tokens)
 
         matched_pos = []
@@ -156,9 +140,8 @@ class generate:
         else:
             raise ValueError("aggregation must be 'mean' or 'max'")
 
-        topk = torch.topk(scores, k=min(top_k, scores.shape[0]))
+        topk = t.topk(scores, k=min(top_k, scores.shape[0]))
         return topk
-
 
     def load_results(self, data_f):
         with open(os.path.join(self.base_f, data_f), "r") as f:
@@ -176,7 +159,6 @@ class generate:
                 else:
                     rt[task]["fail"].append(id)
         return dict(rt)
-
 
     def run(self, out_f, save_results=True):
         out = []
@@ -213,7 +195,6 @@ class generate:
             print(f"results saved: {out_path}")
         return out
 
-
     def run_sae(self, layer, out_f, save_results=True):
         out_path = os.path.join(self.base_f, out_f)
         # create output folder
@@ -223,7 +204,7 @@ class generate:
         last_saved = None
 
         try:
-            for i in tqdm(self.subset, desc="activation inference"):
+            for i in tqdm(self.subset[170 : ], desc="activation inference"):
                 i_id = i[1]   # format: {unique_id}_{num_turns}
                 i = i[2]
                 messages = i['messages']
@@ -239,7 +220,7 @@ class generate:
                     # full prefix
                     self.current_activations = None
                     inputs = self.encode(msg_prefix)
-                    with torch.no_grad():
+                    with t.no_grad():
                         self.model(**inputs)
                     
                     if self.current_activations is None:
@@ -267,7 +248,6 @@ class generate:
                         'turn': turn_i,
                         'num_messages': msg_end,
                         'messages': msg_prefix,
-
                         # full prompt
                         'feature_activations': feature_activations[0].detach().cpu(),
                         'input_ids': inputs['input_ids'][0].detach().cpu(),
@@ -275,7 +255,6 @@ class generate:
                             inputs['input_ids'][0]
                         ),
                         'hidden_states': self.current_activations[0].detach().cpu(),
-
                         # only last user utterance
                         'user_feature_activations': last_user_feature_activations,
                         'user_input_ids': last_user_input_ids,
@@ -289,10 +268,15 @@ class generate:
                     "results": i_results,
                 }
                 if save_results:
-                    torch.save(saved_obj, os.path.join(out_path, f"{i_id}.pt"))
+                    final_path = os.path.join(out_path, f"{i_id}.pt")
+                    
+                    with tempfile.NamedTemporaryFile(dir=out_path, delete=False, suffix=".pt") as tmp:
+                        tmp_path = tmp.name
+                    
+                    t.save(saved_obj, tmp_path)
+                    os.replace(tmp_path, final_path)
 
                 last_saved = saved_obj
         finally:
             handle.remove()
-
         return last_saved
