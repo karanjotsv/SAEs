@@ -11,6 +11,7 @@ import altair as alt
 import plotly.graph_objects as go
 
 from utils import *
+from feature import *
 
 mpl.rcParams['figure.dpi'] = 100
 
@@ -58,155 +59,104 @@ def plot_line(data, x_k, y_k, title=None, xlabel=None, ylabel=None, sort_x=True)
     plt.show()
 
 
-def plot_per_turn(data, normalize=True, show_mean=False):
-    # collect rows for dataframe
-    rows = []
-    # iterate through each sample
-    for sample_id, feature_lists in data.items():
-        # each inner list corresponds to a feature rank
-        for feature_idx, values in enumerate(feature_lists):
-            if len(values) == 0:
-                continue
-            values = list(values)
-            # optionally normalize each feature trajectory by its first value
-            if normalize:
-                base = values[0]
-                if base == 0:
-                    norm_values = [np.nan if v == 0 else np.inf for v in values]
-                else:
-                    norm_values = [v / base for v in values]
-            else:
-                norm_values = values
-            # add each turn as a row in the dataframe
-            for turn_idx, v in enumerate(norm_values):
-                rows.append({
-                    "id": sample_id,
-                    "feature_rank": feature_idx + 1,  # ranks start at 1
-                    "turn": turn_idx + 1,
-                    "activation": v
-                })
-    # create dataframe from collected rows
-    df = pd.DataFrame(rows)
-    if df.empty:
-        raise ValueError("no valid data to plot.")
-    # plot individual trajectories colored by feature rank
-    lines = (
-        alt.Chart(df)
-        .mark_line(opacity=0.4)
+def plot_concepts(
+    splits,
+    groups=None,
+    order_by=None,
+    top_k=None,
+    normalize=False,
+    stat='mean',
+    width=400,
+    height=250,
+):
+    if isinstance(splits, dict) and 'stats' in splits:
+        frame = concept_frame(
+            splits,
+            groups=groups,
+            order_by=order_by,
+            top_k=top_k,
+            normalize=normalize,
+            split='all',
+            stat=stat,
+        )
+    else:
+        frame = pd.concat(
+            [
+                concept_frame(
+                    stats,
+                    groups=groups,
+                    order_by=order_by,
+                    top_k=top_k,
+                    normalize=normalize,
+                    split=split_name,
+                    stat=stat,
+                )
+                for split_name, stats in splits.items()
+            ],
+            ignore_index=False,
+        )
+
+    y_title = (
+        f'{stat} concept value standardized to {label_for(frame["level"].iloc[0], order_by)}'
+        if normalize and len(frame)
+        else f'{stat} concept amplitude'
+    )
+
+    return (
+        alt.Chart(frame)
+        .mark_bar()
         .encode(
-            x=alt.X("turn:Q", title="turn"),
-            y=alt.Y(
-                "activation:Q",
-                title="relative activation" if normalize else "activation"
-            ),
-            color=alt.Color("feature_rank:N", title="feature rank"),
-            detail=["id:N", "feature_rank:N"],
+            x=alt.X('concept_id:O', title=None, axis=None),
+            y=alt.Y('value:Q', title=y_title),
+            color=alt.Color('split:N', title='split'),
+            xOffset=alt.XOffset('split:N'),
             tooltip=[
-                alt.Tooltip("id:N"),
-                alt.Tooltip("feature_rank:N", title="feature rank"),
-                alt.Tooltip("turn:Q"),
-                alt.Tooltip("activation:Q", format=".4f"),
-            ]
+                alt.Tooltip('split:N', title='split'),
+                alt.Tooltip('group_label:N', title='group'),
+                alt.Tooltip('concept_id:O', title='concept id'),
+                alt.Tooltip('concept_rank:Q', title='rank'),
+                alt.Tooltip('value:Q', title='value'),
+                alt.Tooltip('stat:N', title='stat'),
+            ],
         )
+        .properties(width=width, height=height)
+        .facet(column=alt.Column('group_label:N', title=None))
     )
-    # add points to make individual observations visible
-    points = (
-        alt.Chart(df)
-        .mark_point(opacity=0.4, size=40)
+
+
+def plot_transition_scalars(stats, width=320, height=260):
+    if stats['level'] != 'transition':
+        raise ValueError("Expected transition stats")
+
+    frame = pd.DataFrame(
+        [
+            {
+                'transition': f't{key-1}-t{key}',
+                'step': key,
+                'metric': 'mean_cosine',
+                'value': values['mean_cosine'],
+            }
+            for key, values in stats['scalar'].items()
+        ] +
+        [
+            {
+                'transition': f't{key-1}-t{key}',
+                'step': key,
+                'metric': 'mean_l2',
+                'value': values['mean_l2'],
+            }
+            for key, values in stats['scalar'].items()
+        ]
+    )
+
+    return (
+        alt.Chart(frame)
+        .mark_line(point=True)
         .encode(
-            x="turn:Q",
-            y="activation:Q",
-            color=alt.Color("feature_rank:N", title="feature rank"),
-            detail=["id:N", "feature_rank:N"],
-            tooltip=[
-                alt.Tooltip("id:N"),
-                alt.Tooltip("feature_rank:N", title="feature rank"),
-                alt.Tooltip("turn:Q"),
-                alt.Tooltip("activation:Q", format=".4f"),
-            ]
+            x=alt.X('step:Q', title='transition ending at turn'),
+            y=alt.Y('value:Q', title='value'),
+            tooltip=['transition', 'metric', 'value'],
         )
+        .properties(width=width, height=height)
+        .facet(column=alt.Column('metric:N', title=None))
     )
-    layers = [lines, points]
-    # compute and plot mean trajectory per feature rank
-    if show_mean:
-        # group by feature rank and turn to compute mean activation
-        mean_df = (
-            df.groupby(["feature_rank", "turn"], as_index=False)["activation"]
-            .mean()
-        )
-        # permanent label text: omit rank on the first turn
-        mean_df["label"] = mean_df.apply(
-            lambda r: (
-                f"turn {int(r['turn'])}, mean {r['activation']:.4f}"
-                if int(r["turn"]) == 1
-                else f"rank {int(r['feature_rank'])}, turn {int(r['turn'])}, mean {r['activation']:.4f}"
-            ),
-            axis=1
-        )
-        # draw thinner black mean lines
-        mean_lines = (
-            alt.Chart(mean_df)
-            .mark_line(color="black", strokeWidth=2, opacity=0.8)
-            .encode(
-                x="turn:Q",
-                y="activation:Q",
-                detail="feature_rank:N",
-                tooltip=[
-                    alt.Tooltip("feature_rank:N", title="feature rank"),
-                    alt.Tooltip("turn:Q"),
-                    alt.Tooltip("activation:Q", format=".4f", title="mean activation"),
-                ]
-            )
-        )
-        # add points on the mean lines
-        mean_points = (
-            alt.Chart(mean_df)
-            .mark_point(color="black", size=80, filled=True)
-            .encode(
-                x="turn:Q",
-                y="activation:Q",
-                detail="feature_rank:N",
-                tooltip=[
-                    alt.Tooltip("feature_rank:N", title="feature rank"),
-                    alt.Tooltip("turn:Q"),
-                    alt.Tooltip("activation:Q", format=".4f", title="mean activation"),
-                ]
-            )
-        )
-        # always-visible labels for mean points
-        mean_labels = (
-            alt.Chart(mean_df)
-            .mark_text(
-                align="left",
-                dx=8,
-                dy=-8,
-                fontSize=11,
-                color="black"
-            )
-            .encode(
-                x="turn:Q",
-                y="activation:Q",
-                detail="feature_rank:N",
-                text="label:N"
-            )
-        )
-        layers.extend([mean_lines, mean_points, mean_labels])
-    # add horizontal reference line at 1.0 when normalized
-    if normalize:
-        rule = (
-            alt.Chart(pd.DataFrame({"y": [1.0]}))
-            .mark_rule(strokeDash=[5, 5], color="black")
-            .encode(y="y:Q")
-        )
-        layers.append(rule)
-    # combine all layers into final interactive chart
-    chart = (
-        alt.layer(*layers)
-        .properties(
-            width=950,
-            height=600,
-            title="feature activation across turns"
-        )
-        .interactive()
-    )
-    return chart

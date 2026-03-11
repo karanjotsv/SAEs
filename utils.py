@@ -147,7 +147,7 @@ class generate:
         with open(os.path.join(self.base_f, data_f), "r") as f:
             data = json.load(f)
 
-        rt = defaultdict(lambda: {"success": [], "fail": []})
+        rt = defaultdict(lambda: {"pass": [], "fail": []})
 
         for i in data:
             for id, content in i.items():
@@ -155,14 +155,14 @@ class generate:
                 score = content.get("score", 0)
 
                 if score == 1.0:
-                    rt[task]["success"].append(id)
+                    rt[task]["pass"].append(id)
                 else:
                     rt[task]["fail"].append(id)
         return dict(rt)
 
     def run(self, out_f, save_results=True):
         out = []
-        self.ids = {task: {'success': [], 'fail': []} for task in self.tasks}
+        self.ids = {task: {'pass': [], 'fail': []} for task in self.tasks}
     
         for i in tqdm(self.subset, desc="predictive inference"):
             # instance id
@@ -184,7 +184,7 @@ class generate:
 
             out.append({id: i})
 
-            if score >= 1.0: self.ids[task]['success'].append(id)
+            if score >= 1.0: self.ids[task]['pass'].append(id)
             else: self.ids[task]['fail'].append(id)
         
         if save_results:
@@ -204,7 +204,7 @@ class generate:
         last_saved = None
 
         try:
-            for i in tqdm(self.subset[170 : ], desc="activation inference"):
+            for i in tqdm(self.subset[ : ], desc="activation inference"):
                 i_id = i[1]   # format: {unique_id}_{num_turns}
                 i = i[2]
                 messages = i['messages']
