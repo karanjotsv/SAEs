@@ -1,9 +1,12 @@
 import re
+import numpy as np
+import pandas as pd
+
 import torch
 import torch.nn.functional as F
 
-import pandas as pd
-import altair as alt
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold, cross_validate
 
 
 DEFAULT_SPECIAL_TOKENS = {
@@ -39,10 +42,10 @@ def get_turn_representation(t_data, source, selector, pooling='mean', lexical_on
 
     if source == 'full':
         tokens = list(t_data['input_tokens'])
-        reps = t_data['hidden_states']
+        reps = t_data['feature_activations']
     elif source == 'user':
         tokens = list(t_data['user_input_tokens'])
-        reps = t_data['user_hidden_states']
+        reps = t_data['user_feature_activations']
     else:
         raise ValueError("source must be 'full' or 'user'")
 
@@ -88,21 +91,39 @@ def get_turn_representation(t_data, source, selector, pooling='mean', lexical_on
     return reduce_tensor(reps[positions], pooling)
 
 
-def summarize(vectors):
+def summarize(vectors, l0_threshold=1e-6):
     if not vectors:
         return None
 
     x = torch.stack(vectors).float()
-    norms = x.norm(dim=1)
+
+    mean_vec = x.mean(dim=0)
+    median_vec = x.median(dim=0).values
+
+    l0 = (x.abs() > l0_threshold).sum(dim=1).float()
+    num_concepts = mean_vec.numel()
+
+    active_mean = (mean_vec > 0).sum().item()
+    active_median = (median_vec > 0).sum().item()
 
     return {
         'count': x.shape[0],
-        'mean': x.mean(dim=0),
-        'median': x.median(dim=0).values,
+
+        'mean': mean_vec,
+        'median': median_vec,
         'std': x.std(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
         'var': x.var(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
-        'mean_norm': norms.mean().item(),
-        'std_norm': norms.std(unbiased=False).item() if x.shape[0] > 1 else 0.0,
+
+        'mean_l0': l0.mean().item(),
+        'std_l0': l0.std(unbiased=False).item() if x.shape[0] > 1 else 0.0,
+
+        'active_mean': active_mean,
+        'active_frac_mean': active_mean / num_concepts,
+
+        'active_median': active_median,
+        'active_frac_median': active_median / num_concepts,
+
+        'num_concepts': num_concepts,
     }
 
 
@@ -189,11 +210,12 @@ def label_for(level, key):
 def concept_frame(
     stats,
     groups=None,
-    order_by=None,
+    order=None,
     top_k=None,
     normalize=False,
     split='all',
     stat='mean',
+    order_label=None,
 ):
     level = stats['level']
     stats_map = {k: v for k, v in stats['stats'].items() if v is not None}
@@ -212,25 +234,28 @@ def concept_frame(
             ]
         )
 
-    order_by = groups[0] if order_by is None else order_by
-    if order_by not in stats_map:
-        raise ValueError("order_by group not found in stats")
-
-    if stat not in stats_map[order_by]:
-        raise ValueError("stat not found in stats")
-
-    ref_vec = stats_map[order_by][stat].float().cpu()
-    order_vec = standardize(ref_vec, ref_vec) if normalize else ref_vec
-    order = torch.argsort(order_vec, descending=True)
+    if order is None:
+        ref_group = groups[0]
+        if stat not in stats_map[ref_group]:
+            raise ValueError("stat not found in stats")
+        ref_vec = stats_map[ref_group][stat].float().cpu()
+        order_vec = standardize(ref_vec, ref_vec) if normalize else ref_vec
+        order = torch.argsort(order_vec, descending=True)
+        order_label = order_label or f"{split}:{stat}:{ref_group}"
 
     if top_k is not None:
         order = order[:top_k]
 
     rows = []
 
+    ref_vec = None
+    if normalize:
+        ref_group = groups[0]
+        ref_vec = stats_map[ref_group][stat].float().cpu()
+
     for group in groups:
         if stat not in stats_map[group]:
-            raise ValueError("stat not found in stats")
+            raise ValueError(f"stat '{stat}' not found in stats for group {group}")
 
         vec = stats_map[group][stat].float().cpu()
         if normalize:
@@ -247,10 +272,178 @@ def concept_frame(
                     'concept_rank': rank,
                     'value': vec[rank - 1].item(),
                     'split': split,
-                    'order_by': order_by,
+                    'order_by': order_label,
                     'normalized': normalize,
                     'stat': stat,
                 }
             )
-
     return pd.DataFrame(rows)
+
+
+class FeatureImportance:
+    def __init__(
+        self,
+        data,
+        reg_values=(0.01, 0.1, 1.0, 10.0),
+        n_top_features=100,
+        n_splits=5,
+        seed=44,
+    ):
+        self.data = data
+        self.reg_values = list(reg_values)
+        self.n_top_features = n_top_features
+        self.n_splits = n_splits
+        self.seed = seed
+        self.results = {}
+
+    def available_turns(self):
+        turns = set()
+
+        for _, ex_list in self.data.items():
+            for ex in ex_list:
+                for tdata in ex.get('turns', []):
+                    turns.add(tdata['turn'])
+
+        return sorted(turns)
+
+    def build_dataset(self, mode='turn', turn=None):
+        X = []
+        y = []
+
+        for split, ex_list in self.data.items():
+            label = 1 if split == 'pass' else 0
+
+            for ex in ex_list:
+                turns = ex.get('turns', [])
+
+                if mode == 'turn':
+                    if turn is None:
+                        raise ValueError("turn must be provided when mode='turn'")
+
+                    rep = None
+                    for tdata in turns:
+                        if tdata['turn'] == turn:
+                            rep = tdata['representation']
+                            break
+
+                    if rep is None:
+                        continue
+
+                    X.append(rep.float().cpu().numpy())
+                    y.append(label)
+
+                elif mode == 'global':
+                    for tdata in turns:
+                        rep = tdata['representation']
+                        X.append(rep.float().cpu().numpy())
+                        y.append(label)
+
+                else:
+                    raise ValueError("mode must be 'turn' or 'global'")
+
+        if not X:
+            if mode == 'turn':
+                raise ValueError(f"No data for turn {turn}")
+            raise ValueError("No data found")
+
+        return np.stack(X), np.array(y)
+
+    def select_reg(self, X, y):
+        rows = []
+
+        for c in self.reg_values:
+            model = LogisticRegression(
+                C=c,
+                penalty='l1',
+                solver='liblinear',
+                max_iter=2000,
+                random_state=self.seed,
+            )
+
+            cv = StratifiedKFold(
+                n_splits=self.n_splits,
+                shuffle=True,
+                random_state=self.seed,
+            )
+
+            scores = cross_validate(
+                model,
+                X,
+                y,
+                cv=cv,
+                scoring={'acc': 'accuracy', 'auc': 'roc_auc'},
+            )
+
+            rows.append({
+                'c': c,
+                'acc_mean': float(np.mean(scores['test_acc'])),
+                'acc_std': float(np.std(scores['test_acc'])),
+                'auc_mean': float(np.mean(scores['test_auc'])),
+                'auc_std': float(np.std(scores['test_auc'])),
+            })
+
+        return pd.DataFrame(rows).sort_values(
+            ['auc_mean', 'acc_mean'],
+            ascending=False,
+        ).reset_index(drop=True)
+
+    def compute(self, mode='turn', turn=None, c=None, n_top_features=None):
+        n_top_features = self.n_top_features if n_top_features is None else n_top_features
+
+        X, y = self.build_dataset(mode=mode, turn=turn)
+
+        if c is None:
+            reg_table = self.select_reg(X, y)
+            best_c = reg_table.loc[0, 'c']
+        else:
+            reg_table = None
+            best_c = c
+
+        model = LogisticRegression(
+            C=best_c,
+            penalty='l1',
+            solver='liblinear',
+            max_iter=2000,
+            random_state=self.seed,
+        )
+
+        model.fit(X, y)
+
+        coef = model.coef_[0]
+        imp = np.abs(coef)
+
+        feat_table = pd.DataFrame({
+            'feature': np.arange(len(coef)),
+            'coefficient': coef,
+            'importance': imp,
+        }).sort_values('importance', ascending=False).reset_index(drop=True)
+
+        top_features = feat_table['feature'].head(n_top_features).tolist()
+
+        key = turn if mode == 'turn' else 'global'
+
+        result = {
+            'mode': mode,
+            'turn': turn,
+            'num_samples': len(y),
+            'num_features': X.shape[1],
+            'best_c': best_c,
+            'regularization_table': reg_table,
+            'model': model,
+            'feature_table': feat_table,
+            'top_features': top_features,
+        }
+
+        self.results[key] = result
+        return result
+
+    def compute_all_turns(self, n_top_features=None):
+        for turn in self.available_turns():
+            self.compute(
+                mode='turn',
+                turn=turn,
+                n_top_features=n_top_features,
+            )
+
+        return self.results
+    
