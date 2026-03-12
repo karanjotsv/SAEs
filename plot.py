@@ -164,7 +164,7 @@ def plot_concepts(
 
 def plot_transition(stats, width=400, height=250):
     if stats['level'] != 'transition':
-        raise ValueError("Expected transition stats")
+        raise ValueError("expected transition stats")
 
     frame = pd.DataFrame(
         [
