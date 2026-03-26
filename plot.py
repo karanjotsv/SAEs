@@ -9,6 +9,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import altair as alt
 import plotly.graph_objects as go
+from wordcloud import WordCloud
 
 from utils import *
 from feature import *
@@ -199,51 +200,47 @@ def plot_transition(stats, width=400, height=250):
     )
 
 
-def plot_l0(splits, groups=None, width=400, height=250):
-    if isinstance(splits, dict) and 'stats' in splits:
-        stats_items = [('all', splits)]
-    else:
-        stats_items = list(splits.items())
-
+def plot_l0(stats, bins=40, title="L0 distribution across turns"):
     rows = []
 
-    for split_name, stats in stats_items:
-        level = stats['level']
-        stats_map = {k: v for k, v in stats['stats'].items() if v is not None}
+    for turn, turn_stats in sorted(stats['stats'].items()):
+        for l0 in turn_stats['l0_distribution']:
+            rows.append({
+                "turn": str(turn),
+                "l0": float(l0),
+            })
 
-        use_groups = sorted(stats_map) if groups is None else [g for g in groups if g in stats_map]
+    df = pd.DataFrame(rows)
 
-        for group in use_groups:
-            s = stats_map[group]
-            rows.append(
-                {
-                    'split': split_name,
-                    'group': group,
-                    'group_label': label_for(level, group),
-                    'mean_l0': s['mean_l0'],
-                    'std_l0': s['std_l0'],
-                }
-            )
-
-    frame = pd.DataFrame(rows)
-
-    return (
-        alt.Chart(frame)
-        .mark_bar()
+    base = (
+        alt.Chart(df)
+        .mark_bar(opacity=0.7)
         .encode(
-            x=alt.X('group_label:N', title=None),
-            y=alt.Y('mean_l0:Q', title='mean turn-level L0'),
-            color=alt.Color('split:N', title='split'),
-            xOffset=alt.XOffset('split:N'),
-            tooltip=[
-                alt.Tooltip('split:N', title='split'),
-                alt.Tooltip('group_label:N', title='group'),
-                alt.Tooltip('mean_l0:Q', title='mean L0'),
-                alt.Tooltip('std_l0:Q', title='std L0'),
-            ],
+            x=alt.X(
+                "l0:Q",
+                bin=alt.Bin(maxbins=bins),
+                title="L0 (# active features)"
+            ),
+            y=alt.Y(
+                "count():Q",
+                title="Count"
+            ),
+            tooltip=[alt.Tooltip("count()", title="Count")]
         )
-        .properties(width=width, height=height)
     )
+    chart = (
+        base
+        .facet(
+            column=alt.Column("turn:N", title="Turn")
+        )
+        .resolve_scale(
+            y="shared"   # <-- ensures identical y-axis across turns
+        )
+        .properties(
+            title=title
+        )
+    )
+    return chart
 
 
 def plot_top_feature_trajectories(

@@ -1,6 +1,7 @@
 import re
 import numpy as np
 import pandas as pd
+from collections import defaultdict
 
 import torch
 import torch.nn.functional as F
@@ -8,7 +9,10 @@ import torch.nn.functional as F
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_validate
 
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
+# llama tokens
 DEFAULT_SPECIAL_TOKENS = {
     "<|begin_of_text|>",
     "<|end_of_text|>",
@@ -100,30 +104,33 @@ def summarize(vectors, l0_threshold=1e-6):
     mean_vec = x.mean(dim=0)
     median_vec = x.median(dim=0).values
 
+    # L0 per sample
     l0 = (x.abs() > l0_threshold).sum(dim=1).float()
-    num_concepts = mean_vec.numel()
 
+    num_concepts = mean_vec.numel()
     active_mean = (mean_vec > 0).sum().item()
     active_median = (median_vec > 0).sum().item()
 
     return {
-        'count': x.shape[0],
+        "count": x.shape[0],
 
-        'mean': mean_vec,
-        'median': median_vec,
-        'std': x.std(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
-        'var': x.var(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
+        "mean": mean_vec,
+        "median": median_vec,
+        "std": x.std(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
+        "var": x.var(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
 
-        'mean_l0': l0.mean().item(),
-        'std_l0': l0.std(unbiased=False).item() if x.shape[0] > 1 else 0.0,
+        # L0 statistics
+        "mean_l0": l0.mean().item(),
+        "std_l0": l0.std(unbiased=False).item() if x.shape[0] > 1 else 0.0,
+        "l0_distribution": l0.cpu().tolist(),  
 
-        'active_mean': active_mean,
-        'active_frac_mean': active_mean / num_concepts,
+        "active_mean": active_mean,
+        "active_frac_mean": active_mean / num_concepts,
 
-        'active_median': active_median,
-        'active_frac_median': active_median / num_concepts,
+        "active_median": active_median,
+        "active_frac_median": active_median / num_concepts,
 
-        'num_concepts': num_concepts,
+        "num_concepts": num_concepts,
     }
 
 
@@ -285,13 +292,11 @@ class FeatureImportance:
         self,
         data,
         reg_values=(0.01, 0.1, 1.0, 10.0),
-        n_top_features=100,
         n_splits=5,
         seed=44,
     ):
         self.data = data
         self.reg_values = list(reg_values)
-        self.n_top_features = n_top_features
         self.n_splits = n_splits
         self.seed = seed
         self.results = {}
@@ -325,18 +330,20 @@ class FeatureImportance:
                         if tdata['turn'] == turn:
                             rep = tdata['representation']
                             break
-
                     if rep is None:
                         continue
-
                     X.append(rep.float().cpu().numpy())
                     y.append(label)
 
                 elif mode == 'global':
-                    for tdata in turns:
-                        rep = tdata['representation']
-                        X.append(rep.float().cpu().numpy())
-                        y.append(label)
+                    if not turns:
+                        continue
+
+                    reps = [tdata['representation'].float().cpu().numpy() for tdata in turns]
+                    # average across turns
+                    rep = np.mean(reps, axis=0)
+                    X.append(rep)
+                    y.append(label)
 
                 else:
                     raise ValueError("mode must be 'turn' or 'global'")
@@ -352,34 +359,42 @@ class FeatureImportance:
         rows = []
 
         for c in self.reg_values:
-            model = LogisticRegression(
-                C=c,
-                penalty='l1',
-                solver='liblinear',
-                max_iter=2000,
-                random_state=self.seed,
-            )
+            model = Pipeline([
+                ('scaler', StandardScaler()),
+                ('clf', LogisticRegression(
+                    C=c,
+                    penalty='l1',
+                    solver='liblinear',
+                    max_iter=2000,
+                    random_state=self.seed,
+                ))
+            ])
 
             cv = StratifiedKFold(
                 n_splits=self.n_splits,
                 shuffle=True,
                 random_state=self.seed,
             )
-
             scores = cross_validate(
                 model,
                 X,
                 y,
                 cv=cv,
                 scoring={'acc': 'accuracy', 'auc': 'roc_auc'},
+                return_train_score=True, 
             )
-
             rows.append({
                 'c': c,
+                # test metrics
                 'acc_mean': float(np.mean(scores['test_acc'])),
                 'acc_std': float(np.std(scores['test_acc'])),
                 'auc_mean': float(np.mean(scores['test_auc'])),
                 'auc_std': float(np.std(scores['test_auc'])),
+                # train metrics
+                'train_acc_mean': float(np.mean(scores['train_acc'])),
+                'train_acc_std': float(np.std(scores['train_acc'])),
+                'train_auc_mean': float(np.mean(scores['train_auc'])),
+                'train_auc_std': float(np.std(scores['train_auc'])),
             })
 
         return pd.DataFrame(rows).sort_values(
@@ -388,8 +403,6 @@ class FeatureImportance:
         ).reset_index(drop=True)
 
     def compute(self, mode='turn', turn=None, c=None, n_top_features=None):
-        n_top_features = self.n_top_features if n_top_features is None else n_top_features
-
         X, y = self.build_dataset(mode=mode, turn=turn)
 
         if c is None:
@@ -399,18 +412,27 @@ class FeatureImportance:
             reg_table = None
             best_c = c
 
-        model = LogisticRegression(
-            C=best_c,
-            penalty='l1',
-            solver='liblinear',
-            max_iter=2000,
-            random_state=self.seed,
-        )
-
+        model = Pipeline([
+            ('scaler', StandardScaler()),
+            ('clf', LogisticRegression(
+                C=best_c,
+                penalty='l1',
+                solver='liblinear',
+                max_iter=2000,
+                random_state=self.seed,
+            ))
+        ])
         model.fit(X, y)
 
-        coef = model.coef_[0]
+        coef = model.named_steps['clf'].coef_[0]
         imp = np.abs(coef)
+
+        num_coef = len(coef)
+        num_zero = int(np.sum(coef == 0))
+        num_nonzero = int(num_coef - num_zero)
+
+        sparsity = num_zero / num_coef       # % zero
+        density = num_nonzero / num_coef  
 
         feat_table = pd.DataFrame({
             'feature': np.arange(len(coef)),
@@ -432,18 +454,57 @@ class FeatureImportance:
             'model': model,
             'feature_table': feat_table,
             'top_features': top_features,
+            'num_zero_coef': int(num_zero),
+            'num_nonzero_coef': int(num_nonzero),
+            'sparsity': float(sparsity),
+            'density': float(density),
         }
 
         self.results[key] = result
         return result
 
-    def compute_all_turns(self, n_top_features=None):
-        for turn in self.available_turns():
-            self.compute(
-                mode='turn',
-                turn=turn,
-                n_top_features=n_top_features,
-            )
+    def top_feature_turn_values_df(self, result_key, top_n=None):
+    
+        if result_key not in self.results:
+            raise ValueError(f"result_key {result_key!r} not found in self.results")
 
-        return self.results
+        result = self.results[result_key]
+        top_features = result['top_features']
+        if top_n is not None:
+            top_features = top_features[:top_n]
+
+        rows = []
+
+        for split, ex_list in self.data.items():
+            label = 1 if split == 'pass' else 0
+
+            for example_idx, ex in enumerate(ex_list):
+                turns = ex.get('turns', [])
+                if not turns:
+                    continue
+
+                for tdata in turns:
+                    turn_id = tdata['turn']
+                    rep = tdata['representation'].float().cpu().numpy()
+
+                    row = {
+                        'split': split,
+                        'label': label,
+                        'example_idx': example_idx,
+                        'turn': turn_id,
+                    }
+                    for feat in top_features:
+                        row[f'feature_{feat}'] = float(rep[feat])
+
+                    rows.append(row)
+
+        df = pd.DataFrame(rows)
+
+        if df.empty:
+            return df
+
+        return df.sort_values(
+            ['split', 'example_idx', 'turn'],
+            ascending=[True, True, True],
+        ).reset_index(drop=True)
     

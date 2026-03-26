@@ -6,3 +6,4 @@ sae-probes==0.3.0
 sae-dashboard==0.7.3
 nbformat>=4.2.
 altair==6.0.0
+wordcloud==1.9.6
