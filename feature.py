@@ -46,10 +46,12 @@ def get_turn_representation(t_data, source, selector, pooling='mean', lexical_on
 
     if source == 'full':
         tokens = list(t_data['input_tokens'])
+        # reps = t_data['feature_activations']
         reps = t_data['feature_activations']
     elif source == 'user':
-        tokens = list(t_data['user_input_tokens'])
-        reps = t_data['user_feature_activations']
+        tokens = list(t_data['user_feature_activations'])
+        # reps = t_data['user_feature_activations']
+        reps = t_data['user_hidden_states']
     else:
         raise ValueError("source must be 'full' or 'user'")
 

@@ -10,7 +10,7 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--dataset", type=str, nargs="+", choices=["instruct"], required=True, help="which dataset to use"
+        "--dataset", type=str, nargs="+", choices=["instruct", "multic"], required=True, help="which dataset to use"
     )
     parser.add_argument(
         "--ratio", type=float, required=True, help="test size"
@@ -33,6 +33,59 @@ def normalize_sentence(text):
     if text[-1] not in ".?!":
         text += "."
     return text
+
+
+def load_multic(path="./multic/dataset.jsonl", mt=False):
+    instances = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for li, l in enumerate(f):
+            l = l.strip()
+
+            row = json.loads(l)
+
+            qid = row.get("QUESTION_ID", f"item_{li}")
+            axis = row.get("AXIS", "")
+            conv = row.get("CONVERSATION", [])
+            target_question = row.get("TARGET_QUESTION", "")
+            pass_criteria = row.get("PASS_CRITERIA", "")
+
+            messages = [
+                {
+                    "role": turn["role"],
+                    "content": normalize_sentence(turn["content"]),
+                }
+                for turn in conv
+            ]
+
+            if mt:
+                user_turn_indices = [
+                    i for i, turn in enumerate(messages) if turn["role"] == "user"
+                ]
+
+                for j, end_idx in enumerate(user_turn_indices):
+                    partial_messages = messages[: end_idx + 1]
+
+                    instances.append({
+                        f"{qid}_{j}": {
+                            "messages": partial_messages,
+                            "response": target_question,
+                            "reference": pass_criteria,
+                            "task": axis,
+                            "metric": "llm_judge",
+                        }
+                    })
+            else:
+                instances.append({
+                    qid: {
+                        "messages": messages,
+                        "response": target_question,
+                        "reference": pass_criteria,
+                        "task": axis,
+                        "metric": "llm_judge",
+                    }
+                })
+    return instances
 
 
 def load_instruct(path="./instruct/dataset.json", mt=False):
@@ -95,7 +148,8 @@ if __name__ == '__main__':
     random.seed(0)
 
     func_map = {
-        'instruct': load_instruct
+        'instruct': load_instruct,
+        'multic': load_multic
     }
 
     for dataset in args.dataset:

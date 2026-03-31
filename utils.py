@@ -8,6 +8,7 @@ from collections import defaultdict
 import torch as t
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+from llm_judge import *
 from dictionary_learning import AutoEncoder
 from dictionary_learning.trainers.top_k import AutoEncoderTopK
 
@@ -178,7 +179,14 @@ class generate:
             metric = i['metric']
             ref = i.get('reference', [])
             # evaluate model performance
-            score = eval_metric(metric, pred, ref) 
+            if metric == "llm_judge":
+                cri = i['response']
+                score, judge_reasoning, judge_verdict = llm_judge(pred, cri, ref)
+                i['judge_reasoning'] = judge_reasoning
+                i['judge_verdict'] = judge_verdict
+            else:
+                score = eval_metric(metric, pred, ref)
+
             i['prediction'] = pred
             i['score'] = score
 
