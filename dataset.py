@@ -2,6 +2,7 @@ import os
 import json
 import random
 import argparse
+import csv
 
 # from dictionary_learning.config import random_seeds
 
@@ -10,11 +11,14 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--dataset", type=str, nargs="+", choices=["instruct", "multic"], required=True, help="which dataset to use"
+        "--dataset", type=str, nargs="+", choices=["instruct", "multic", "multif"], required=True, help="which dataset to use"
     )
     parser.add_argument(
         "--ratio", type=float, required=True, help="test size"
     )
+    # parser.add_argument(
+    #     "--language", type=str, default="English", help="language filter for datasets that support it"
+    # )
     # parser.add_argument(
     #     "--multi_turn", action="store_true", help="follow multi-turn fashion"
     # )
@@ -26,7 +30,7 @@ def get_args():
 def normalize_sentence(text):
     """fix punctuation if required"""
     text = text.strip()
-    
+
     if not text:
         return text
 
@@ -35,60 +39,7 @@ def normalize_sentence(text):
     return text
 
 
-def load_multic(path="./multic/dataset.jsonl", mt=False):
-    instances = []
-
-    with open(path, "r", encoding="utf-8") as f:
-        for li, l in enumerate(f):
-            l = l.strip()
-
-            row = json.loads(l)
-
-            qid = row.get("QUESTION_ID", f"item_{li}")
-            axis = row.get("AXIS", "")
-            conv = row.get("CONVERSATION", [])
-            target_question = row.get("TARGET_QUESTION", "")
-            pass_criteria = row.get("PASS_CRITERIA", "")
-
-            messages = [
-                {
-                    "role": turn["role"],
-                    "content": normalize_sentence(turn["content"]),
-                }
-                for turn in conv
-            ]
-
-            if mt:
-                user_turn_indices = [
-                    i for i, turn in enumerate(messages) if turn["role"] == "user"
-                ]
-
-                for j, end_idx in enumerate(user_turn_indices):
-                    partial_messages = messages[: end_idx + 1]
-
-                    instances.append({
-                        f"{qid}_{j}": {
-                            "messages": partial_messages,
-                            "response": target_question,
-                            "reference": pass_criteria,
-                            "task": axis,
-                            "metric": "llm_judge",
-                        }
-                    })
-            else:
-                instances.append({
-                    qid: {
-                        "messages": messages,
-                        "response": target_question,
-                        "reference": pass_criteria,
-                        "task": axis,
-                        "metric": "llm_judge",
-                    }
-                })
-    return instances
-
-
-def load_instruct(path="./instruct/dataset.json", mt=False):
+def load_instruct(path="./instruct/dataset.json", mt=False):  # language="English"
     # read json
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -139,7 +90,121 @@ def load_instruct(path="./instruct/dataset.json", mt=False):
                         "metric": ans["evaluation_metric"]
                     }
                 })
-            
+
+    return instances
+
+
+def _is_non_empty(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    return True
+
+
+def _parse_json_field(value, default=None):
+    if not _is_non_empty(value):
+        return default
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+
+def load_multif(path="./multif/dataset.csv", mt=True, language="English"):
+    instances = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        for li, row in enumerate(reader):
+            row_language = (row.get("language") or "").strip()
+            if language and row_language != language:
+                continue
+
+            qid = row.get("key", f"item_{li}")
+
+            prompts = [
+                _parse_json_field(row.get("turn_1_prompt"), default={}),
+                _parse_json_field(row.get("turn_2_prompt"), default={}),
+                _parse_json_field(row.get("turn_3_prompt"), default={}),
+            ]
+
+            instruction_lists = [
+                _parse_json_field(row.get("turn_1_instruction_id_list"), default=[]),
+                _parse_json_field(row.get("turn_2_instruction_id_list"), default=[]),
+                _parse_json_field(row.get("turn_3_instruction_id_list"), default=[]),
+            ]
+
+            kwargs_lists = [
+                _parse_json_field(row.get("turn_1_kwargs"), default=[]),
+                _parse_json_field(row.get("turn_2_kwargs"), default=[]),
+                _parse_json_field(row.get("turn_3_kwargs"), default=[]),
+            ]
+
+            if mt:
+                for i in range(3):
+                    messages = []
+                    for j in range(i + 1):
+                        prompt = prompts[j]
+                        if isinstance(prompt, dict):
+                            role = prompt.get("role", "user")
+                            content = prompt.get("content", "")
+                        else:
+                            role = "user"
+                            content = str(prompt)
+
+                        if _is_non_empty(content):
+                            messages.append({
+                                "role": role,
+                                "content": content,
+                            })
+
+                    instance = {
+                        "messages": messages,
+                        "reference": {
+                            "instruction_id_list": instruction_lists[i],
+                            "kwargs": kwargs_lists[i],
+                        },
+                        "metric": "rule_based",
+                        "language": row_language if row_language else language,
+                    }
+
+                    instances.append({
+                        f"{qid}_{i}": instance
+                    })
+            else:
+                i = 2
+                messages = []
+                for j in range(i + 1):
+                    prompt = prompts[j]
+                    if isinstance(prompt, dict):
+                        role = prompt.get("role", "user")
+                        content = prompt.get("content", "")
+                    else:
+                        role = "user"
+                        content = str(prompt)
+
+                    if _is_non_empty(content):
+                        messages.append({
+                            "role": role,
+                            "content": content,
+                        })
+
+                instances.append({
+                    f"{qid}_{i}": {
+                        "messages": messages,
+                        "reference": {
+                            "instruction_id_list": instruction_lists[i],
+                            "kwargs": kwargs_lists[i],
+                        },
+                        "metric": "rule_based",
+                        "language": row_language if row_language else language,
+                    }
+                })
+
     return instances
 
 
@@ -149,11 +214,18 @@ if __name__ == '__main__':
 
     func_map = {
         'instruct': load_instruct,
-        'multic': load_multic
+        'multic': load_multic,
+        'multif': load_multif,
+    }
+
+    path_map = {
+        'instruct': "./instruct/dataset.json",
+        'multic': "./multic/dataset.jsonl",
+        'multif': "./multif/multiIF_20241018.csv",
     }
 
     for dataset in args.dataset:
-        instances = func_map[dataset]()
+        instances = func_map[dataset](path=path_map[dataset])  # language=args.language
 
         if args.ratio > 0:
             random.shuffle(instances)
@@ -176,4 +248,4 @@ if __name__ == '__main__':
                 json.dump(instances, f, ensure_ascii=False, indent=4)
 
 
-# python3 dataset.py --dataset alpaca 
+# python3 dataset.py --dataset alpaca

@@ -1,9 +1,28 @@
 from openai import OpenAI
 from pydantic import BaseModel
+
 from typing import Literal
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 _openai_client = None
+
+def get_openai_client():
+    """
+    Lazily initialize and return a singleton OpenAI client.
+
+    Returns:
+        OpenAI: An initialized OpenAI client instance.
+    """
+    global _openai_client
+
+    if _openai_client is None:
+        _openai_client = OpenAI()
+
+    return _openai_client
+
 
 JUDGE_PROMPT = """You are tasked with evaluating a model response to see if it meets a specific criteria.
 
@@ -27,7 +46,6 @@ The criteria that the model response must meet is as follows. Be VERY STRICT!:
 
 Print your reasoning followed by your verdict, either "YES" or "NO"."""
 
-
 class Judge(BaseModel):
     """
     Structured response schema for the LLM judge.
@@ -38,22 +56,6 @@ class Judge(BaseModel):
     """
     reasoning: str
     verdict: Literal["YES", "NO"]
-
-
-def get_openai_client():
-    """
-    Lazily initialize and return a singleton OpenAI client.
-
-    Returns:
-        OpenAI: An initialized OpenAI client instance.
-    """
-    global _openai_client
-
-    if _openai_client is None:
-        _openai_client = OpenAI()
-
-    return _openai_client
-
 
 def llm_judge(pred, cri, ref, judge_model='gpt-4o'):
     """

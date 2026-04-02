@@ -12,6 +12,8 @@ from llm_judge import *
 from dictionary_learning import AutoEncoder
 from dictionary_learning.trainers.top_k import AutoEncoderTopK
 
+from multif.multif_eval import *
+
 
 def extract_choices(text):
     m = re.search(r"Answer:\s*([A-Z](?:\s*,\s*[A-H])*)", text, flags=re.I)
@@ -71,15 +73,53 @@ class generate:
         # storage for captured activations
         self.current_activations = None
     
-    def load_data(self, data_f, tasks):
+    def load_data(self, data_f, tasks=None):
         self.tasks = tasks
         # load json
         self.dataset = json.load(open(os.path.join(self.base_f, data_f), "r"))
 
-        self.subset = [] 
+        self.subset = []
         for i, item in enumerate(self.dataset):
             for key, ex in item.items():
-                if ex.get("task") in tasks:
+                # case 1: no task filtering 
+                if tasks is None:
+                    self.subset.append((i, key, ex))
+                # case 2: task-based filtering
+                elif "task" in ex and ex.get("task") in tasks:
+                    self.subset.append((i, key, ex))
+
+    def load_multif_data(self, data_f, filter_kwargs=None):
+        # load json
+        self.dataset = json.load(open(os.path.join(self.base_f, data_f), "r"))
+
+        self.subset = []
+        # if no filters
+        if filter_kwargs is None:
+            for i, item in enumerate(self.dataset):
+                for key, ex in item.items():
+                    self.subset.append((i, key, ex))
+            return
+
+        instruction_list = filter_kwargs.get("instruction_list")
+        turn = filter_kwargs.get("turn")
+        match_all = filter_kwargs.get("match_all", False)
+
+        # first pass: find valid conversation roots based on specified kwargs
+        valid_roots = {
+            key.rsplit("_", 1)[0]
+            for item in self.dataset
+            for key, ex in item.items()
+            if (turn is None or key.endswith(f"en_{turn}")) and (
+                instruction_list is None or
+                (all(instr in ex.get("reference", {}).get("instruction_id_list", []) for instr in instruction_list)
+                if match_all else
+                any(instr in ex.get("reference", {}).get("instruction_id_list", []) for instr in instruction_list))
+            )
+        }
+        # second pass: load all turns for matched roots
+        for i, item in enumerate(self.dataset):
+            for key, ex in item.items():
+                if key.rsplit("_", 1)[0] in valid_roots:
                     self.subset.append((i, key, ex))
 
     def hook_fn(self, module, input, output):
@@ -161,44 +201,104 @@ class generate:
                     rt[task]["fail"].append(id)
         return dict(rt)
 
-    def run(self, out_f, save_results=True):
+    def run(self, out_f, save_results=True, stitch_turns=False):
         out = []
-        self.ids = {task: {'pass': [], 'fail': []} for task in self.tasks}
-    
-        for i in tqdm(self.subset, desc="predictive inference"):
-            # instance id
-            id = i[1]
-            
-            input = self.encode(i[2]['messages'])
-            output = self.generate(input)
-            pred = self.decode(input, output)
-            # messages
-            i = i[-1]
-            # metadata
-            task = i['task']
-            metric = i['metric']
-            ref = i.get('reference', [])
-            # evaluate model performance
+
+        if getattr(self, "tasks", None):
+            self.ids = {t: {'pass': [], 'fail': []} for t in self.tasks}
+        else:
+            self.ids = {}
+
+        # always keep global tracking
+        self.ids["all"] = {'pass': [], 'fail': []}
+
+        items = self.subset
+        # only needed for Multi-IF style rollout
+        if stitch_turns:
+            items = sorted(
+                self.subset,
+                key=lambda x: (
+                    x[1].rsplit("_", 1)[0] if "_" in x[1] else x[1],
+                    int(x[1].rsplit("_", 1)[1]) if "_" in x[1] and x[1].rsplit("_", 1)[1].isdigit() else 0
+                )
+            )
+        cur_k = None
+        hist = []
+
+        for it in tqdm(items[ : ], desc="predictive inference"):
+            _, eid, ex = it
+
+            if stitch_turns:
+                if "_" in eid:
+                    k, s = eid.rsplit("_", 1)
+                    try:
+                        t = int(s)
+                    except:
+                        k, t = eid, 0
+                else:
+                    k, t = eid, 0
+
+                if k != cur_k:
+                    cur_k = k
+                    hist = []
+
+                msgs = ex["messages"]
+                new_msgs = []
+                for j, m in enumerate(msgs):
+                    new_msgs.append(m)
+                    if j < len(hist):
+                        new_msgs.append({
+                            "role": "assistant",
+                            "content": hist[j]
+                        })
+            else:
+                new_msgs = ex["messages"]
+
+            inp = self.encode(new_msgs)
+            outp = self.generate(inp)
+            pred = self.decode(inp, outp)
+
+            metric = ex["metric"]
+            ref = ex.get("reference", [])
+
             if metric == "llm_judge":
-                cri = i['response']
-                score, judge_reasoning, judge_verdict = llm_judge(pred, cri, ref)
-                i['judge_reasoning'] = judge_reasoning
-                i['judge_verdict'] = judge_verdict
+                cri = ex["response"]
+                score, jr, jv = llm_judge(pred, cri, ref)
+                ex["judge_reasoning"] = jr
+                ex["judge_verdict"] = jv
+            elif metric == "rule_based":
+                res = eval_generation_strict(pred, ref)
+                score = res["conversation_level_strict"]
+                ex["conversation_level_strict"] = res["conversation_level_strict"]
+                ex["instruction_level_strict"] = res["instruction_level_strict"]
+                ex["instruction_scores"] = res["instruction_scores"]
             else:
                 score = eval_metric(metric, pred, ref)
 
-            i['prediction'] = pred
-            i['score'] = score
+            ex["messages"] = new_msgs
+            ex["prediction"] = pred
+            ex["score"] = score
 
-            out.append({id: i})
+            out.append({eid: ex})
 
-            if score >= 1.0: self.ids[task]['pass'].append(id)
-            else: self.ids[task]['fail'].append(id)
-        
+            if score >= 1.0:
+                self.ids["all"]['pass'].append(eid)
+            else:
+                self.ids["all"]['fail'].append(eid)
+
+            task = ex.get("task")
+            if task is not None and task in self.ids:
+                if score >= 1.0:
+                    self.ids[task]['pass'].append(eid)
+                else:
+                    self.ids[task]['fail'].append(eid)
+
+            if stitch_turns:
+                hist.append(pred)
+
         if save_results:
             out_path = os.path.join(self.base_f, out_f)
-
-            with open(out_path, 'w') as f: 
+            with open(out_path, 'w') as f:
                 json.dump(out, f, indent=2, ensure_ascii=False)
             print(f"results saved: {out_path}")
         return out
