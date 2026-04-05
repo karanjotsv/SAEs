@@ -11,7 +11,7 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--dataset", type=str, nargs="+", choices=["instruct", "multic", "multif"], required=True, help="which dataset to use"
+        "--dataset", type=str, nargs="+", choices=["instruct", "multif"], required=True, help="which dataset to use"
     )
     parser.add_argument(
         "--ratio", type=float, required=True, help="test size"
@@ -39,8 +39,8 @@ def normalize_sentence(text):
     return text
 
 
-def load_instruct(path="./instruct/dataset.json", mt=False):  # language="English"
-    # read json
+def load_instruct(path="./instruct/dataset.json", mt=True):  # language="English"
+    # read jsons
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -66,8 +66,9 @@ def load_instruct(path="./instruct/dataset.json", mt=False):  # language="Englis
                                 } for x in ques
                             ],
                             "response": ans["text"],
-                            "reference": ans["evaluation_reference"],
-                            "task": t
+                            "reference": ans.get("evaluation_reference", None),
+                            "task": t,
+                            "metric": ans.get("evaluation_metric", None)
                         }
                     })
             else:
@@ -214,7 +215,6 @@ if __name__ == '__main__':
 
     func_map = {
         'instruct': load_instruct,
-        'multic': load_multic,
         'multif': load_multif,
     }
 
