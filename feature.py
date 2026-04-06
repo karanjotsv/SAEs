@@ -1,18 +1,18 @@
+import os
 import re
-import numpy as np
-import pandas as pd
 from collections import defaultdict
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_validate
-
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-# llama tokens
+
 DEFAULT_SPECIAL_TOKENS = {
     "<|begin_of_text|>",
     "<|end_of_text|>",
@@ -38,28 +38,27 @@ def reduce_tensor(x, mode='mean'):
 def valid_token(token, special_tokens):
     if token in special_tokens:
         return False
-    return bool(re.search(r"[A-Za-z0-9]", token.replace("Ġ", "").replace("Ċ", "")))
+    cleaned = token.replace("Ġ", "").replace("Ċ", "")
+    return bool(re.search(r"[A-Za-z0-9]", cleaned))
 
 
-def get_turn_representation(t_data, source, selector, pooling='mean', lexical_only=False, spl_tokens=None):
-    spl_tokens = DEFAULT_SPECIAL_TOKENS if spl_tokens is None else spl_tokens
-
+def _get_token_data(t_data, source):
     if source == 'full':
-        tokens = list(t_data['input_tokens'])
-        # reps = t_data['feature_activations']
-        reps = t_data['feature_activations']
-    elif source == 'user':
-        tokens = list(t_data['user_feature_activations'])
-        # reps = t_data['user_feature_activations']
-        reps = t_data['user_hidden_states']
-    else:
-        raise ValueError("source must be 'full' or 'user'")
+        return list(t_data['input_tokens']), t_data['feature_activations']
+    if source == 'user':
+        return list(t_data['user_input_tokens']), t_data['user_feature_activations']
+    raise ValueError("source must be 'full' or 'user'")
 
+
+def _get_tokens_before_assistant(tokens, reps):
     for i in range(len(tokens) - 1):
         if tokens[i] == "<|start_header_id|>" and tokens[i + 1] == "assistant":
-            tokens = tokens[:i]
-            reps = reps[:i]
-            break
+            return tokens[:i], reps[:i]
+    return tokens, reps
+
+
+def _get_clean_tokens(tokens, reps, spl_tokens):
+    tokens = list(tokens)
 
     while tokens:
         token = tokens[-1]
@@ -70,13 +69,16 @@ def get_turn_representation(t_data, source, selector, pooling='mean', lexical_on
         else:
             break
 
+    return tokens, reps
+
+
+def _get_token_positions(tokens, selector, spl_tokens, lexical_only=False):
     if selector == 'all':
-        positions = (
-            [i for i, token in enumerate(tokens) if valid_token(token, spl_tokens)]
-            if lexical_only
-            else list(range(len(tokens)))
-        )
-    elif selector == 'last':
+        if lexical_only:
+            return [i for i, token in enumerate(tokens) if valid_token(token, spl_tokens)]
+        return list(range(len(tokens)))
+
+    if selector == 'last':
         positions = []
         for i in reversed(range(len(tokens))):
             token = tokens[i]
@@ -87,14 +89,113 @@ def get_turn_representation(t_data, source, selector, pooling='mean', lexical_on
             positions.append(i)
             if i == 0 or token.startswith("Ġ"):
                 break
-        positions = list(reversed(positions))
-    else:
-        raise ValueError("selector must be 'all' or 'last'")
+        return list(reversed(positions))
+
+    raise ValueError("selector must be 'all' or 'last'")
+
+
+def get_turn_representation(t_data, source, selector, pooling='mean', lexical_only=False, spl_tokens=None):
+    spl_tokens = DEFAULT_SPECIAL_TOKENS if spl_tokens is None else spl_tokens
+
+    tokens, reps = _get_token_data(t_data, source)
+    tokens, reps = _get_tokens_before_assistant(tokens, reps)
+    tokens, reps = _get_clean_tokens(tokens, reps, spl_tokens)
+
+    positions = _get_token_positions(
+        tokens,
+        selector,
+        spl_tokens,
+        lexical_only=lexical_only,
+    )
 
     if not positions:
         raise ValueError("no tokens selected")
 
     return reduce_tensor(reps[positions], pooling)
+
+
+def _get_id_turn(name):
+    match = re.match(r"^(.*)_(\d+)$", name)
+    if not match:
+        return name, None
+    return match.group(1), int(match.group(2))
+
+
+def _get_activation_index(act_dir):
+    index = defaultdict(list)
+
+    for fname in os.listdir(act_dir):
+        if not fname.endswith(".pt"):
+            continue
+
+        stem = fname[:-3]
+        root, turn = _get_id_turn(stem)
+        index[root].append((turn, os.path.join(act_dir, fname)))
+
+    for root in index:
+        index[root].sort(key=lambda x: (x[0] is None, x[0]))
+
+    return index
+
+
+def _load_conv_data(conv_id, file_index):
+    root, _ = _get_id_turn(conv_id)
+
+    if root not in file_index:
+        raise FileNotFoundError(f"No activation files found for conversation: {conv_id}")
+
+    turns = []
+    for _, path in file_index[root]:
+        obj = torch.load(path)
+        turns.append(obj["results"][0])
+
+    return root, turns
+
+
+def get_activation_instances(
+    ids,
+    task,
+    base_f,
+    act_subdir="activations_topk",
+    source='user',
+    selector='all',
+    pooling='mean',
+    lexical_only=True,
+):
+    act_dir = os.path.join(base_f, act_subdir)
+    file_index = _get_activation_index(act_dir)
+
+    instances = {}
+
+    for label in ('pass', 'fail'):
+        processed = []
+
+        for conv_id in ids[task][label]:
+            conv_root, turn_results = _load_conv_data(conv_id, file_index)
+
+            turns = []
+            for t_data in turn_results:
+                rep = get_turn_representation(
+                    t_data,
+                    source=source,
+                    selector=selector,
+                    pooling=pooling,
+                    lexical_only=lexical_only,
+                )
+                turns.append({
+                    'turn': t_data['turn'],
+                    'representation': rep,
+                })
+
+            processed.append({
+                'id': conv_root,
+                'turns': turns,
+            })
+
+        instances[label] = processed
+
+    instances['all'] = instances['pass'] + instances['fail']
+    return instances
 
 
 def summarize(vectors, l0_threshold=1e-6):
@@ -105,8 +206,6 @@ def summarize(vectors, l0_threshold=1e-6):
 
     mean_vec = x.mean(dim=0)
     median_vec = x.median(dim=0).values
-
-    # L0 per sample
     l0 = (x.abs() > l0_threshold).sum(dim=1).float()
 
     num_concepts = mean_vec.numel()
@@ -115,23 +214,17 @@ def summarize(vectors, l0_threshold=1e-6):
 
     return {
         "count": x.shape[0],
-
         "mean": mean_vec,
         "median": median_vec,
         "std": x.std(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
         "var": x.var(dim=0, unbiased=False) if x.shape[0] > 1 else torch.zeros_like(x[0]),
-
-        # L0 statistics
         "mean_l0": l0.mean().item(),
         "std_l0": l0.std(unbiased=False).item() if x.shape[0] > 1 else 0.0,
-        "l0_distribution": l0.cpu().tolist(),  
-
+        "l0_distribution": l0.cpu().tolist(),
         "active_mean": active_mean,
         "active_frac_mean": active_mean / num_concepts,
-
         "active_median": active_median,
         "active_frac_median": active_median / num_concepts,
-
         "num_concepts": num_concepts,
     }
 
@@ -147,10 +240,9 @@ def get_stats(instances, level='turn'):
     grouped = {}
 
     if level == 'turn':
-        for i in instances:
-            for item in i['turns']:
-                key = item['turn']
-                grouped.setdefault(key, []).append(item['representation'])
+        for instance in instances:
+            for item in instance['turns']:
+                grouped.setdefault(item['turn'], []).append(item['representation'])
 
         return {
             'level': level,
@@ -162,8 +254,8 @@ def get_stats(instances, level='turn'):
     all_cos = []
     all_l2 = []
 
-    for x in instances:
-        vectors = [item['representation'].float() for item in x['turns']]
+    for instance in instances:
+        vectors = [item['representation'].float() for item in instance['turns']]
 
         for i in range(1, len(vectors)):
             prev_vec = vectors[i - 1]
@@ -286,7 +378,14 @@ def concept_frame(
                     'stat': stat,
                 }
             )
+
     return pd.DataFrame(rows)
+
+
+def _get_split_examples(data):
+    for split in ('pass', 'fail'):
+        for ex in data.get(split, []):
+            yield split, ex
 
 
 class FeatureImportance:
@@ -306,10 +405,9 @@ class FeatureImportance:
     def available_turns(self):
         turns = set()
 
-        for _, ex_list in self.data.items():
-            for ex in ex_list:
-                for tdata in ex.get('turns', []):
-                    turns.add(tdata['turn'])
+        for _, ex in _get_split_examples(self.data):
+            for tdata in ex.get('turns', []):
+                turns.add(tdata['turn'])
 
         return sorted(turns)
 
@@ -317,38 +415,31 @@ class FeatureImportance:
         X = []
         y = []
 
-        for split, ex_list in self.data.items():
+        for split, ex in _get_split_examples(self.data):
             label = 1 if split == 'pass' else 0
+            turns = ex.get('turns', [])
 
-            for ex in ex_list:
-                turns = ex.get('turns', [])
+            if mode == 'turn':
+                if turn is None:
+                    raise ValueError("turn must be provided when mode='turn'")
 
-                if mode == 'turn':
-                    if turn is None:
-                        raise ValueError("turn must be provided when mode='turn'")
+                rep = next((t['representation'] for t in turns if t['turn'] == turn), None)
+                if rep is None:
+                    continue
 
-                    rep = None
-                    for tdata in turns:
-                        if tdata['turn'] == turn:
-                            rep = tdata['representation']
-                            break
-                    if rep is None:
-                        continue
-                    X.append(rep.float().cpu().numpy())
-                    y.append(label)
+                X.append(rep.float().cpu().numpy())
+                y.append(label)
 
-                elif mode == 'global':
-                    if not turns:
-                        continue
+            elif mode == 'global':
+                if not turns:
+                    continue
 
-                    reps = [tdata['representation'].float().cpu().numpy() for tdata in turns]
-                    # average across turns
-                    rep = np.mean(reps, axis=0)
-                    X.append(rep)
-                    y.append(label)
+                reps = [t['representation'].float().cpu().numpy() for t in turns]
+                X.append(np.mean(reps, axis=0))
+                y.append(label)
 
-                else:
-                    raise ValueError("mode must be 'turn' or 'global'")
+            else:
+                raise ValueError("mode must be 'turn' or 'global'")
 
         if not X:
             if mode == 'turn':
@@ -377,22 +468,22 @@ class FeatureImportance:
                 shuffle=True,
                 random_state=self.seed,
             )
+
             scores = cross_validate(
                 model,
                 X,
                 y,
                 cv=cv,
                 scoring={'acc': 'accuracy', 'auc': 'roc_auc'},
-                return_train_score=True, 
+                return_train_score=True,
             )
+
             rows.append({
                 'c': c,
-                # test metrics
                 'acc_mean': float(np.mean(scores['test_acc'])),
                 'acc_std': float(np.std(scores['test_acc'])),
                 'auc_mean': float(np.mean(scores['test_auc'])),
                 'auc_std': float(np.std(scores['test_auc'])),
-                # train metrics
                 'train_acc_mean': float(np.mean(scores['train_acc'])),
                 'train_acc_std': float(np.std(scores['train_acc'])),
                 'train_auc_mean': float(np.mean(scores['train_auc'])),
@@ -433,9 +524,6 @@ class FeatureImportance:
         num_zero = int(np.sum(coef == 0))
         num_nonzero = int(num_coef - num_zero)
 
-        sparsity = num_zero / num_coef       # % zero
-        density = num_nonzero / num_coef  
-
         feat_table = pd.DataFrame({
             'feature': np.arange(len(coef)),
             'coefficient': coef,
@@ -443,7 +531,6 @@ class FeatureImportance:
         }).sort_values('importance', ascending=False).reset_index(drop=True)
 
         top_features = feat_table['feature'].head(n_top_features).tolist()
-
         key = turn if mode == 'turn' else 'global'
 
         result = {
@@ -458,15 +545,14 @@ class FeatureImportance:
             'top_features': top_features,
             'num_zero_coef': int(num_zero),
             'num_nonzero_coef': int(num_nonzero),
-            'sparsity': float(sparsity),
-            'density': float(density),
+            'sparsity': float(num_zero / num_coef),
+            'density': float(num_nonzero / num_coef),
         }
 
         self.results[key] = result
         return result
 
     def top_feature_turn_values_df(self, result_key, top_n=None):
-    
         if result_key not in self.results:
             raise ValueError(f"result_key {result_key!r} not found in self.results")
 
@@ -477,8 +563,9 @@ class FeatureImportance:
 
         rows = []
 
-        for split, ex_list in self.data.items():
+        for split in ('pass', 'fail'):
             label = 1 if split == 'pass' else 0
+            ex_list = self.data.get(split, [])
 
             for example_idx, ex in enumerate(ex_list):
                 turns = ex.get('turns', [])
@@ -486,14 +573,13 @@ class FeatureImportance:
                     continue
 
                 for tdata in turns:
-                    turn_id = tdata['turn']
                     rep = tdata['representation'].float().cpu().numpy()
 
                     row = {
                         'split': split,
                         'label': label,
                         'example_idx': example_idx,
-                        'turn': turn_id,
+                        'turn': tdata['turn'],
                     }
                     for feat in top_features:
                         row[f'feature_{feat}'] = float(rep[feat])
@@ -509,4 +595,3 @@ class FeatureImportance:
             ['split', 'example_idx', 'turn'],
             ascending=[True, True, True],
         ).reset_index(drop=True)
-    

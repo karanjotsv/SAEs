@@ -634,7 +634,7 @@ class Generate:
 
         self.ids["all"] = {"pass": [], "fail": []}
 
-        items = self._sorted_items(stitch_turns)[ : 5]
+        items = self._sorted_items(stitch_turns)[ : 20]
         cur_k = None
         hist = []
 

@@ -19,9 +19,9 @@ def get_args():
     # parser.add_argument(
     #     "--language", type=str, default="English", help="language filter for datasets that support it"
     # )
-    # parser.add_argument(
-    #     "--multi_turn", action="store_true", help="follow multi-turn fashion"
-    # )
+    parser.add_argument(
+        "--multi_turn", action="store_true", help="follow multi-turn fashion"
+    )
 
     args = parser.parse_args()
     return args
@@ -220,12 +220,11 @@ if __name__ == '__main__':
 
     path_map = {
         'instruct': "./instruct/dataset.json",
-        'multic': "./multic/dataset.jsonl",
         'multif': "./multif/multiIF_20241018.csv",
     }
 
     for dataset in args.dataset:
-        instances = func_map[dataset](path=path_map[dataset])  # language=args.language
+        instances = func_map[dataset](path=path_map[dataset], mt=args.multi_turn)  # language=args.language
 
         if args.ratio > 0:
             random.shuffle(instances)
@@ -239,11 +238,11 @@ if __name__ == '__main__':
             }
 
             for d in ins.keys():
-                fname = f'{dataset}_{d}.json'
+                fname = f'./{dataset}/{d}.json'
                 with open(fname, "w", encoding="utf-8") as f:
                     json.dump(ins[d], f, ensure_ascii=False, indent=4)
         else:
-            fname = f'{dataset}.json'
+            fname = f'./{dataset}/{dataset}.json'
             with open(fname, "w", encoding="utf-8") as f:
                 json.dump(instances, f, ensure_ascii=False, indent=4)
 
