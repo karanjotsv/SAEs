@@ -130,48 +130,104 @@ def _get_activation_index(act_dir):
 
         stem = fname[:-3]
         root, turn = _get_id_turn(stem)
-        index[root].append((turn, os.path.join(act_dir, fname)))
+        index[root].append((stem, turn, os.path.join(act_dir, fname)))
 
     for root in index:
-        index[root].sort(key=lambda x: (x[0] is None, x[0]))
+        index[root].sort(key=lambda x: (x[1] is None, x[1]))
 
     return index
 
 
-def _load_conv_data(conv_id, file_index):
+def _load_conv_data(conv_id, file_index, selected_ids=None):
     root, _ = _get_id_turn(conv_id)
 
     if root not in file_index:
         raise FileNotFoundError(f"No activation files found for conversation: {conv_id}")
 
     turns = []
-    for _, path in file_index[root]:
+    for ex_id, _, path in file_index[root]:
+        if selected_ids is not None and ex_id not in selected_ids:
+            continue
         obj = torch.load(path)
         turns.append(obj["results"][0])
+
+    if not turns:
+        raise FileNotFoundError(f"No activation files found for selected ids in conversation: {conv_id}")
 
     return root, turns
 
 
+def _flatten_ids(ids_subset):
+    if not isinstance(ids_subset, dict):
+        raise ValueError("ids subset must be a dict")
+
+    if all(isinstance(v, list) for v in ids_subset.values()):
+        return ids_subset
+
+    flat = defaultdict(list)
+    for _, group in ids_subset.items():
+        for label, values in group.items():
+            flat[label].extend(values)
+
+    return dict(flat)
+
+
+def collate_ids_by_verdict_turn(ids, verdict_turn=0):
+    flat = {}
+
+    for task_name, turn_data in ids.items():
+        if verdict_turn not in turn_data:
+            raise ValueError(
+                f"verdict_turn={verdict_turn} not found for task '{task_name}'. "
+                f"Available turns: {sorted(turn_data.keys())}"
+            )
+        verdict_pass = set(i.rsplit('_', 1)[0] for i in turn_data[verdict_turn]['pass'])
+        verdict_fail = set(i.rsplit('_', 1)[0] for i in turn_data[verdict_turn]['fail'])
+
+        # ensure mutual exclusivity - verdict_turn's pass takes priority
+        verdict_fail = verdict_fail - verdict_pass
+
+        result = {'pass': list(verdict_pass), 'fail': list(verdict_fail)}
+        flat[task_name] = result
+
+    return flat
+
+
 def get_activation_instances(
     ids,
-    task,
     base_f,
+    filter=None,
     act_subdir="activations_topk",
     source='user',
     selector='all',
     pooling='mean',
     lexical_only=True,
+    all_turns=False,
 ):
     act_dir = os.path.join(base_f, act_subdir)
     file_index = _get_activation_index(act_dir)
 
     instances = {}
 
-    for label in ('pass', 'fail'):
-        processed = []
+    filter_ids = ids if not filter else ids[filter]
+    filter_ids = _flatten_ids(filter_ids)
 
-        for conv_id in ids[task][label]:
-            conv_root, turn_results = _load_conv_data(conv_id, file_index)
+    for label in filter_ids:
+        processed = []
+        selected_ids = None if all_turns else set(filter_ids[label])
+        seen_roots = set()
+
+        for conv_id in filter_ids[label]:
+            conv_root, _ = _get_id_turn(conv_id)
+            if conv_root in seen_roots:
+                continue
+            seen_roots.add(conv_root)
+
+            conv_root, turn_results = _load_conv_data(
+                conv_id,
+                file_index,
+                selected_ids=selected_ids,
+            )
 
             turns = []
             for t_data in turn_results:
@@ -194,7 +250,9 @@ def get_activation_instances(
 
         instances[label] = processed
 
-    instances['all'] = instances['pass'] + instances['fail']
+    if 'pass' in instances and 'fail' in instances:
+        instances['all'] = instances['pass'] + instances['fail']
+
     return instances
 
 

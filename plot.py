@@ -158,7 +158,7 @@ def plot_concepts(
             ],
         )
         .properties(width=width, height=height)
-        .facet(column=alt.Column('group_label:N', title=None))
+        .facet(column=alt.Row('group_label:N', title=None))
         .properties(title=title)
     )
 
