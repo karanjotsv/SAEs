@@ -277,7 +277,7 @@ class Generate:
         Run a prompt forward pass and capture hidden states from the selected layer
         """
         self.current_activations = None
-        handle = self.model.model.layers[layer].register_forward_hook(self.hook_fn)
+        handle = self.model.model.layers[layer].mlp.register_forward_hook(self.hook_fn)
 
         try:
             inputs = self.encode(messages)
@@ -634,7 +634,7 @@ class Generate:
 
         self.ids["all"] = {"pass": [], "fail": []}
 
-        items = self._sorted_items(stitch_turns)[ : 20]
+        items = self._sorted_items(stitch_turns)[ : ]
         cur_k = None
         hist = []
 
